@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.db
+*.log
+*.jsonl
+*.html
+*.jpg
+*.png
+.idea/
+.claude/
+data/
+E:\tmp\
