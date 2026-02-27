@@ -1,0 +1,48 @@
+# AI探索性阻断测试配置
+# 复制本文件为 config.yaml，填入实际值后使用
+
+# AI模型配置
+ai:
+  api_base_url: "https://apis.iflow.cn/v1"
+  api_key: "your-api-key-here"
+  model: "qwen3-vl-plus"
+  max_tokens: 4096
+  temperature: 0.3
+  timeout: 180
+  image_max_size: 1280
+  image_quality: 70
+  max_retries: 3
+
+# 探索行为配置
+exploration:
+  max_steps: 200
+  max_duration_seconds: 1800
+  max_consecutive_duplicates: 5
+  max_errors: 10
+  action_delay: 2.0
+  screenshot_delay: 10.0
+  similarity_threshold: 0.85
+
+# 目标应用配置
+app:
+  package_name: "tv.danmaku.bili"
+  platform: "Android"
+  device_uuid: "your-device-uuid"
+  # device_uri: ""
+  # poco_type: ""
+  # window_name: ""
+
+# 路由器阻断规则配置
+router:
+  router_host: "192.168.254.122"
+  router_port: 22
+  router_user: "admin"
+  router_pwd: "your-password"
+  router_enable_pwd: "your-enable-password"
+  extend_device: "t1"
+
+# 小类ID（阻断规则索引，必填）
+l_class: "23921"
+
+# 输出目录
+output_dir: "E:\\tmp\\explore"

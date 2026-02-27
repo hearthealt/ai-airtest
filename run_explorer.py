@@ -42,7 +42,7 @@ def _patched_getLogger(name=None):
 
 logging.getLogger = _patched_getLogger
 
-from ai_explorer.config import Config, AppConfig, RouterConfig
+from ai_explorer.config import Config
 from ai_explorer.device_driver_ext import AIDeviceDriver
 from ai_explorer.report_generator import ReportGenerator
 
@@ -148,17 +148,5 @@ def run_exploration(config: Config):
 
 
 if __name__ == "__main__":
-    # ========================================
-    #   只需要修改下面几项，其他配置见 config.py
-    # ========================================
-
-    config = Config(
-        app=AppConfig(
-            package_name="tv.danmaku.bili",       # 应用包名
-            device_uuid="DQAUBQLVQWZDLVT8",       # 设备UUID（adb devices查看）
-        ),
-        l_class="23921",                          # 小类ID（阻断规则索引）
-        # output_dir 默认 E:\tmp\explore，日志自动存到 output_dir/l_class/
-    )
-
+    config = Config.load()
     run_exploration(config)

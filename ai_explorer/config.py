@@ -4,20 +4,21 @@
 from dataclasses import dataclass, field
 from typing import List
 import json
+import os
 
 
 @dataclass
 class AIConfig:
     """AI模型配置"""
-    api_base_url: str = "https://apis.iflow.cn/v1"          # API基础地址
-    api_key: str = "sk-256884e9805cc589497fea20f30faa7c"     # API密钥
-    model: str = "qwen3-vl-plus"                              # 模型名称
-    max_tokens: int = 4096                                    # 最大输出token数
-    temperature: float = 0.3                                  # 温度（越低越确定性）
-    timeout: int = 180                                        # API超时时间（秒）
-    image_max_size: int = 1280                                  # 发送给AI的图片最大边长（像素）
-    image_quality: int = 70                                     # JPEG压缩质量（1-100）
-    max_retries: int = 3                                      # 最大重试次数
+    api_base_url: str = ""
+    api_key: str = ""
+    model: str = "qwen3-vl-plus"
+    max_tokens: int = 4096
+    temperature: float = 0.3
+    timeout: int = 180
+    image_max_size: int = 1280
+    image_quality: int = 70
+    max_retries: int = 3
 
 
 @dataclass
@@ -63,12 +64,12 @@ class AppConfig:
 @dataclass
 class RouterConfig:
     """路由器阻断规则配置"""
-    router_host: str = "192.168.254.122"    # 路由器地址
-    router_port: int = 22                    # SSH端口
-    router_user: str = "admin"               # 登录用户名
-    router_pwd: str = "zaq1,lp-"             # 登录密码
-    router_enable_pwd: str = "zaq1,lp-"      # enable密码
-    extend_device: str = "t1"                # 扩展设备标识
+    router_host: str = ""
+    router_port: int = 22
+    router_user: str = ""
+    router_pwd: str = ""
+    router_enable_pwd: str = ""
+    extend_device: str = "t1"
 
 
 @dataclass
@@ -116,3 +117,26 @@ class Config:
         """从JSON文件加载配置"""
         with open(path, "r", encoding="utf-8") as f:
             return cls.from_dict(json.load(f))
+
+    @classmethod
+    def from_yaml_file(cls, path: str) -> 'Config':
+        """从YAML文件加载配置"""
+        import yaml
+        with open(path, "r", encoding="utf-8") as f:
+            return cls.from_dict(yaml.safe_load(f))
+
+    @classmethod
+    def load(cls, config_path: str = "") -> 'Config':
+        """自动查找并加载配置文件。优先级：指定路径 > 项目根目录config.yaml"""
+        if config_path and os.path.exists(config_path):
+            return cls.from_yaml_file(config_path)
+
+        # 自动查找项目根目录的config.yaml
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        default_path = os.path.join(root, "config.yaml")
+        if os.path.exists(default_path):
+            return cls.from_yaml_file(default_path)
+
+        raise FileNotFoundError(
+            f"找不到配置文件。请复制 config.yaml.example 为 config.yaml 并填入实际值。"
+        )
