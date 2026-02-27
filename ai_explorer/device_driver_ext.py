@@ -51,10 +51,18 @@ class AIDeviceDriver:
         """
         logger.info("开始AI探索性测试会话")
         result = self.engine.run(app_package)
+
+        successes = sum(1 for i in result.issues_found if i["type"] == "block_success")
+        failures = sum(1 for i in result.issues_found if i["type"] == "block_failure")
+        duration = result.end_time - result.start_time
         logger.info(
             f"探索完成: {result.total_steps}步, "
-            f"{result.unique_screens}个界面, "
-            f"覆盖率{result.coverage_percentage:.1f}%"
+            f"{result.unique_screens}个L1, "
+            f"{result.total_elements_found}个菜单项, "
+            f"已测{result.elements_interacted}个, "
+            f"覆盖率{result.coverage_percentage:.1f}%, "
+            f"阻断成功{successes}个, 失败{failures}个, "
+            f"耗时{duration:.0f}秒"
         )
         return result
 

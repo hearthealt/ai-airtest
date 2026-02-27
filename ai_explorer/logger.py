@@ -31,7 +31,7 @@ class ExplorationLogger:
         ))
         pkg_logger = logging.getLogger("ai_explorer")
         pkg_logger.addHandler(file_handler)
-        pkg_logger.setLevel(logging.DEBUG)
+        pkg_logger.setLevel(logging.INFO)
 
     def log_step(self, step: ExplorationStep):
         """

@@ -82,6 +82,7 @@ class Config:
     l_class: str = ""                       # 小类ID（阻断规则索引）
     output_dir: str = r"E:\tmp\explore"    # 输出根目录
     logdir: str = ""                        # 实际日志目录（运行时自动生成，无需手动设置）
+    use_nav_cache: bool = True              # 是否启用导航缓存
 
     def build_router_info(self) -> dict:
         """根据配置构建路由器信息字典"""
@@ -110,6 +111,7 @@ class Config:
         cfg.l_class = data.get("l_class", "")
         cfg.output_dir = data.get("output_dir", r"E:\tmp\explore")
         cfg.logdir = data.get("logdir", "")
+        cfg.use_nav_cache = data.get("use_nav_cache", True)
         return cfg
 
     @classmethod

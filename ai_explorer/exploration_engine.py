@@ -1,6 +1,7 @@
 # -*- encoding=utf8 -*-
 """核心探索引擎：结构化L1→L2导航阻断测试状态机。"""
 
+import os
 import time
 import logging
 from typing import List, Dict, Optional
@@ -16,6 +17,7 @@ from .ui_analyzer import UIAnalyzer
 from .screen_state import ScreenManager
 from .action_executor import ActionExecutor
 from .logger import ExplorationLogger
+from .nav_cache import NavCacheDB
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +65,13 @@ class ExplorationEngine:
         self.popup_retry_count = 0
         self.max_popup_retries = 3
 
+        # 导航缓存
+        db_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "nav_cache.db")
+        self.nav_cache = NavCacheDB(db_path)
+
     def run(self, app_package: str = "") -> ExplorationResult:
         self.start_time = time.time()
+        self.app_package = app_package  # 保存供缓存使用
         logger.info(f"=== 结构化阻断测试开始 | 应用={app_package} ===")
 
         if app_package:
@@ -74,6 +81,20 @@ class ExplorationEngine:
                 logger.info(f"应用已启动: {app_package}")
             except Exception as e:
                 logger.error(f"启动应用失败: {e}")
+
+        # 应用启动后，先尝试消除已知弹窗（不用AI）
+        if self.config.use_nav_cache and app_package and self.nav_cache.has_popups(app_package, self.config.l_class):
+            self._dismiss_cached_popups(app_package)
+
+        # 尝试从缓存加载导航结构
+        if self.config.use_nav_cache and app_package and self.nav_cache.has_cache(app_package, self.config.l_class):
+            self.menu_structure = self.nav_cache.load_menu_structure(app_package, self.config.l_class)
+            l1_count = len(self.menu_structure.l1_items)
+            l2_count = sum(len(v) for v in self.menu_structure.l2_map.values())
+            logger.info(f"从缓存加载导航: {l1_count}个L1, {l2_count}个L2")
+            self.state = EngineState.SWITCH_L1  # 跳过发现，直接开始测试
+        else:
+            self.state = EngineState.DISCOVER_L1  # 首次运行，AI发现
 
         step_number = 0
         while not self._should_stop(step_number):
@@ -179,6 +200,10 @@ class ExplorationEngine:
             self.state = EngineState.COMPLETE
             return self._make_info_step(step_number, screenshot_path, elements, "未发现L1菜单，测试完成")
 
+        # 保存L1到缓存（L2将在发现后逐步更新）
+        if self.config.use_nav_cache and self.app_package:
+            self.nav_cache.save_menu_structure(self.app_package, self.config.l_class, self.menu_structure)
+
         # 第一个L1通常已选中，直接进入发现L2
         self.state = EngineState.DISCOVER_L2
         return self._make_info_step(step_number, screenshot_path, elements,
@@ -226,6 +251,10 @@ class ExplorationEngine:
         self.menu_structure.l2_map[l1.name] = l2_items
         self.menu_structure.current_l2_index = 0
 
+        # 更新缓存中该L1的L2数据
+        if self.config.use_nav_cache and self.app_package:
+            self.nav_cache.update_l2_for_l1(self.app_package, self.config.l_class, l1.name, l2_items)
+
         if l2_items:
             l2_names = [i.name for i in l2_items]
             logger.info(f"[步骤{step_number}] L1'{l1.name}'有 {len(l2_items)} 个L2标签: {l2_names}")
@@ -258,6 +287,16 @@ class ExplorationEngine:
 
         if action_result != "success":
             logger.warning(f"[步骤{step_number}] L1'{l1.name}'点击失败: {action_result}")
+            if self.config.use_nav_cache:
+                logger.warning(f"缓存坐标可能过期，重新AI发现L1")
+                self.nav_cache.delete_cache(self.app_package, self.config.l_class)
+                self.state = EngineState.DISCOVER_L1
+                return ExplorationStep(
+                    step_number=step_number, timestamp=time.time(),
+                    screenshot_path="", screen_description=f"L1'{l1.name}'点击失败，重新发现",
+                    ui_tree_summary="", action_taken=action, action_result=action_result,
+                    screen_fingerprint="",
+                )
 
         # 点击后等待页面加载
         time.sleep(self.config.exploration.action_delay)
@@ -300,6 +339,15 @@ class ExplorationEngine:
             action_result = self.action_executor.execute(action)
             if action_result != "success":
                 logger.warning(f"[步骤{step_number}] L2'{l2.name}'点击失败: {action_result}")
+                if self.config.use_nav_cache:
+                    logger.warning(f"缓存坐标可能过期，重新AI发现L2")
+                    self.state = EngineState.DISCOVER_L2
+                    return ExplorationStep(
+                        step_number=step_number, timestamp=time.time(),
+                        screenshot_path="", screen_description=f"L2'{l2.name}'点击失败，重新发现",
+                        ui_tree_summary="", action_taken=action, action_result=action_result,
+                        screen_fingerprint="",
+                    )
 
         # 记录已测控件
         self.last_clicked_target = target_name
@@ -547,7 +595,7 @@ class ExplorationEngine:
             )
 
     def _step_handle_popup(self, step_number: int) -> ExplorationStep:
-        """处理弹窗：点击关闭按钮→返回之前的状态"""
+        """处理弹窗：点击关闭按钮→保存到缓存→返回之前的状态"""
         if not self._pending_popup_coords:
             self.state = self.previous_state or EngineState.DISCOVER_L1
             return self._make_info_step(step_number, "", [], "无弹窗坐标")
@@ -562,6 +610,13 @@ class ExplorationEngine:
             reasoning=f"关闭弹窗: {self._pending_popup_text}",
         )
         action_result = self.action_executor.execute(action)
+
+        # 点击成功后缓存弹窗按钮信息
+        if action_result == "success" and self.config.use_nav_cache and self.app_package:
+            self.nav_cache.save_popup(
+                self.app_package, self.config.l_class, self._pending_popup_text,
+                self._pending_popup_coords[0], self._pending_popup_coords[1]
+            )
 
         # 清除弹窗信息，回到之前状态
         self._pending_popup_coords = None
@@ -583,6 +638,30 @@ class ExplorationEngine:
         )
 
     # ==================== 辅助方法 ====================
+
+    def _dismiss_cached_popups(self, app_package: str):
+        """应用启动后，按缓存顺序逐个点击已知弹窗按钮（不用AI）"""
+        popups = self.nav_cache.load_popups(app_package, self.config.l_class)
+        if not popups:
+            return
+
+        logger.info(f"从缓存消除已知弹窗: {len(popups)}个")
+        for p in popups:
+            coords = (p["coord_x"], p["coord_y"])
+            text = p["button_text"]
+            logger.info(f"  点击缓存弹窗按钮: '{text}' 坐标={coords}")
+
+            action = AIDecision(
+                action=ActionType.CLICK,
+                coordinates=coords,
+                is_popup=True,
+                priority=Priority.HIGH,
+                reasoning=f"缓存弹窗: {text}",
+            )
+            self.action_executor.execute(action)
+            time.sleep(self.config.exploration.action_delay)
+
+        logger.info("已知弹窗处理完毕")
 
     def _capture_and_analyze(self, step_number: int):
         """通用：截图 + 提取UI树。返回 (screenshot_path, elements, ui_tree_text)"""
@@ -614,6 +693,24 @@ class ExplorationEngine:
             "description": f"{'阻断成功' if result_type == 'block_success' else '阻断失败'}: {desc}",
             "screenshot": screenshot_path,
         })
+
+        # 保存到数据库
+        if self.config.use_nav_cache and self.app_package:
+            # 解析item_name, item_level, parent_name
+            target = self.last_clicked_target
+            if "-" in target:
+                parts = target.split("-", 1)
+                parent_name, item_name = parts[0], parts[1]
+                item_level = 2
+            else:
+                item_name = target
+                parent_name = ""
+                item_level = 1
+            self.nav_cache.save_test_result(
+                self.app_package, self.config.l_class,
+                item_name, item_level, parent_name,
+                result_type, desc, screenshot_path
+            )
 
     def _update_current_menu_item(self, status: str, desc: str, screenshot_path: str):
         """更新当前测试中的菜单项状态"""
@@ -666,7 +763,13 @@ class ExplorationEngine:
         return False
 
     def _build_result(self, package: str) -> ExplorationResult:
-        stats = self.screen_manager.get_exploration_stats()
+        # 从MenuStructure计算真实统计
+        total_l1 = len(self.menu_structure.l1_items)
+        total_l2 = sum(len(v) for v in self.menu_structure.l2_map.values())
+        total_menu_items = total_l1 + total_l2
+        tested_count = len(self.tested_controls)
+        coverage = (tested_count / total_menu_items * 100) if total_menu_items > 0 else 0
+
         for i in range(len(self.steps) - 1):
             src, dst = self.steps[i].screen_fingerprint, self.steps[i + 1].screen_fingerprint
             if src and dst and src != dst:
@@ -676,10 +779,11 @@ class ExplorationEngine:
         return ExplorationResult(
             app_package=package, platform=self.config.app.platform,
             start_time=self.start_time, end_time=time.time(),
-            total_steps=len(self.steps), unique_screens=stats["unique_screens"],
-            total_elements_found=stats["total_elements"],
-            elements_interacted=stats["explored_elements"],
-            coverage_percentage=stats["coverage"] * 100,
+            total_steps=len(self.steps),
+            unique_screens=total_l1,
+            total_elements_found=total_menu_items,
+            elements_interacted=tested_count,
+            coverage_percentage=coverage,
             steps=self.steps, screens=self.screen_manager.screens,
             issues_found=self.issues_found, exploration_graph=self.exploration_graph,
         )
