@@ -300,7 +300,25 @@ class ExplorationEngine:
 
         # 点击后等待页面加载
         time.sleep(self.config.exploration.action_delay)
-        self.state = EngineState.DISCOVER_L2
+
+        # 切换L1后，尝试消除该页面可能出现的缓存弹窗
+        if self.config.use_nav_cache and self.app_package:
+            self._dismiss_cached_popups(self.app_package)
+
+        # 优先使用缓存的L2数据，避免重复AI识别
+        # 区分：key存在(已缓存，可能为空) vs key不存在(未缓存，需AI识别)
+        if l1.name in self.menu_structure.l2_map:
+            l2_cached = self.menu_structure.l2_map[l1.name]
+            if l2_cached:
+                logger.info(f"从缓存使用L1'{l1.name}'的L2: {len(l2_cached)}个标签 {[i.name for i in l2_cached]}")
+                self.menu_structure.current_l2_index = 0
+                self.state = EngineState.TEST_L2
+            else:
+                logger.info(f"缓存确认L1'{l1.name}'无L2标签，直接测试L1页面")
+                self.state = EngineState.TEST_L1_DIRECT
+        else:
+            self.state = EngineState.DISCOVER_L2
+
         return ExplorationStep(
             step_number=step_number,
             timestamp=time.time(),
@@ -640,27 +658,86 @@ class ExplorationEngine:
     # ==================== 辅助方法 ====================
 
     def _dismiss_cached_popups(self, app_package: str):
-        """应用启动后，按缓存顺序逐个点击已知弹窗按钮（不用AI）"""
+        """应用启动后，通过UI树验证弹窗是否存在再逐个点击（非盲点）"""
         popups = self.nav_cache.load_popups(app_package, self.config.l_class)
         if not popups:
             return
 
         logger.info(f"从缓存消除已知弹窗: {len(popups)}个")
-        for p in popups:
-            coords = (p["coord_x"], p["coord_y"])
-            text = p["button_text"]
-            logger.info(f"  点击缓存弹窗按钮: '{text}' 坐标={coords}")
 
-            action = AIDecision(
-                action=ActionType.CLICK,
-                coordinates=coords,
-                is_popup=True,
-                priority=Priority.HIGH,
-                reasoning=f"缓存弹窗: {text}",
-            )
-            self.action_executor.execute(action)
-            time.sleep(self.config.exploration.action_delay)
+        # 尝试用UI树验证弹窗是否真实存在
+        elements = self.ui_analyzer.extract_ui_tree()
+        if not elements:
+            # UI树不可用，回退到按顺序盲点（旧行为）
+            logger.info("  UI树不可用，按顺序盲点所有缓存弹窗")
+            for p in popups:
+                coords = (p["coord_x"], p["coord_y"])
+                text = p["button_text"]
+                logger.info(f"  点击缓存弹窗按钮: '{text}' 坐标={coords}")
+                action = AIDecision(
+                    action=ActionType.CLICK,
+                    coordinates=coords,
+                    is_popup=True,
+                    priority=Priority.HIGH,
+                    reasoning=f"缓存弹窗: {text}",
+                )
+                self.action_executor.execute(action)
+                time.sleep(self.config.exploration.action_delay)
+            logger.info("已知弹窗处理完毕")
+            return
 
+        # 智能模式：逐轮检测UI树，确认弹窗存在后再点击
+        remaining = list(popups)
+        max_rounds = len(popups)
+
+        for round_num in range(max_rounds):
+            if not remaining:
+                break
+
+            if round_num > 0:
+                # 上一轮点击后重新提取UI树
+                time.sleep(self.config.exploration.action_delay)
+                elements = self.ui_analyzer.extract_ui_tree()
+                if not elements:
+                    break
+
+            # 收集当前UI树中所有文本和名称
+            ui_texts = set()
+            for el in elements:
+                if el.text:
+                    ui_texts.add(el.text.strip())
+                if el.name:
+                    ui_texts.add(el.name.strip())
+
+            # 在当前UI中找到第一个匹配的弹窗按钮并点击
+            found = False
+            new_remaining = []
+            for p in remaining:
+                text = p["button_text"]
+                coords = (p["coord_x"], p["coord_y"])
+
+                if not found and text in ui_texts:
+                    logger.info(f"  点击缓存弹窗按钮: '{text}' 坐标={coords}")
+                    action = AIDecision(
+                        action=ActionType.CLICK,
+                        coordinates=coords,
+                        is_popup=True,
+                        priority=Priority.HIGH,
+                        reasoning=f"缓存弹窗: {text}",
+                    )
+                    self.action_executor.execute(action)
+                    found = True
+                else:
+                    new_remaining.append(p)
+
+            remaining = new_remaining
+            if not found:
+                # 当前UI中没有找到任何缓存弹窗，停止
+                break
+
+        if remaining:
+            skip_names = [p["button_text"] for p in remaining]
+            logger.info(f"  {len(remaining)}个缓存弹窗未在当前UI中发现，跳过: {skip_names}")
         logger.info("已知弹窗处理完毕")
 
     def _capture_and_analyze(self, step_number: int):
