@@ -1,7 +1,6 @@
 # -*- encoding=utf8 -*-
 """截图捕获与Poco UI树提取模块。"""
 
-import os
 import hashlib
 import logging
 from typing import List
@@ -48,30 +47,17 @@ SKIP_PACKAGES = [
 class UIAnalyzer:
     """UI分析器：从设备中提取并结构化UI信息。"""
 
-    def __init__(self, device_driver, config: ExplorationConfig, l_class: str = ""):
+    def __init__(self, device_driver, config: ExplorationConfig):
         self.dd = device_driver
         self.config = config
-        self.l_class = l_class
-        self._screenshot_counter = 0
 
-    def capture_screenshot(self, logdir: str, label: str = "") -> str:
+    def capture_screenshot(self, label: str = "") -> str:
         """捕获当前界面截图并返回文件路径。"""
-        self._screenshot_counter += 1
-        prefix = self.l_class
-        label_part = f"-{label}" if label else ""
-        filename = f"{prefix}{label_part}-{self._screenshot_counter}.jpg"
-        filepath = os.path.join(logdir, filename)
         try:
-            self.dd.driver.snapshot(filepath)
+            return self.dd.snapshot(label)
         except Exception as e:
             logger.error(f"截图捕获失败: {e}")
-            try:
-                from airtest.core.api import snapshot
-                snapshot(filepath)
-            except Exception as e2:
-                logger.error(f"备用截图方式也失败了: {e2}")
-                return ""
-        return filepath
+            return ""
 
     def extract_ui_tree(self) -> List[UIElement]:
         """提取Poco UI树并返回扁平化的UIElement列表。"""

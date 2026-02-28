@@ -3,15 +3,12 @@
 AI驱动的探索性UI测试 - 主入口
 
 在IDEA中直接运行本文件即可启动探索测试。
-请在下方 if __name__ == "__main__" 中修改配置。
 """
 import os
-import sys
 import logging
-import time
 import warnings
 
-# ====== 在最开始就禁用所有第三方日志和警告 ======
+# ====== 必须在所有业务import之前：禁用第三方日志和警告 ======
 warnings.filterwarnings("ignore")
 
 
@@ -23,25 +20,24 @@ class _OnlyMyLogs(logging.Filter):
         return any(record.name == a or record.name.startswith(a + ".") for a in self._ALLOW)
 
 
-# 在root logger上安装白名单过滤器
 logging.getLogger().addFilter(_OnlyMyLogs())
 
-
-# 猴子补丁：拦截airtest自己创建的带独立handler的logger
 _original_getLogger = logging.getLogger
 
 
 def _patched_getLogger(name=None):
-    logger = _original_getLogger(name)
+    lgr = _original_getLogger(name)
     if name and not any(name == a or name.startswith(a + ".") for a in ("ai_explorer", "__main__")):
-        logger.handlers.clear()
-        logger.addHandler(logging.NullHandler())
-        logger.propagate = False
-    return logger
+        lgr.handlers.clear()
+        lgr.addHandler(logging.NullHandler())
+        lgr.propagate = False
+    return lgr
 
 
 logging.getLogger = _patched_getLogger
 
+# ====== 补丁就绪，现在安全import业务模块 ======
+from ai_explorer.common import DeviceDriver, PcDeviceDriver
 from ai_explorer.config import Config
 from ai_explorer.device_driver_ext import AIDeviceDriver
 from ai_explorer.report_generator import ReportGenerator
@@ -75,13 +71,8 @@ def run_exploration(config: Config):
     )
 
     logger = logging.getLogger(__name__)
-    logger.info(f"配置信息: 包名={config.package_name}, 平台={config.device.platform}, 模式={'功能测试' if config.mode == 1 else '阻断测试'}")
+    logger.info(f"配置信息: value={config.l_class}, 包名={config.package_name}, 平台={config.device.platform}, 模式={'功能测试' if config.mode == 1 else '阻断测试'}")
     logger.info(f"日志目录: {config.logdir}")
-
-    # 导入DeviceDriver（airtest日志已在文件顶部禁用）
-    from airtest.core.api import using
-    using(r"E:\airtest-workspace\common.air")
-    from common import DeviceDriver, PcDeviceDriver
 
     # 连接设备并创建驱动
     if config.device.platform in ("Android", "IOS"):

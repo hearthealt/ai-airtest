@@ -94,7 +94,7 @@ class AIDeviceDriver:
         from .action_executor import ActionExecutor
 
         ui = UIAnalyzer(self.dd, self.config.exploration)
-        screenshot = ui.capture_screenshot(self.config.logdir, "ai_click")
+        screenshot = ui.capture_screenshot("ai_click")
         elements = ui.extract_ui_tree()
         ui_text = ui.format_ui_tree_text(elements)
 
@@ -128,7 +128,7 @@ class AIDeviceDriver:
         from .ui_analyzer import UIAnalyzer
 
         ui = UIAnalyzer(self.dd, self.config.exploration)
-        screenshot = ui.capture_screenshot(self.config.logdir, "ai_assert")
+        screenshot = ui.capture_screenshot("ai_assert")
         elements = ui.extract_ui_tree()
         ui_text = ui.format_ui_tree_text(elements)
 

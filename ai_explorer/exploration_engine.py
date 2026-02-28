@@ -33,7 +33,7 @@ class ExplorationEngine:
         self.dd = device_driver
         self.config = config
         self.ai_client = AIClient(config.ai)
-        self.ui_analyzer = UIAnalyzer(device_driver, config.exploration, config.l_class)
+        self.ui_analyzer = UIAnalyzer(device_driver, config.exploration)
         self.screen_manager = ScreenManager(config.exploration.similarity_threshold)
         self.action_executor = ActionExecutor(device_driver, config.exploration)
         self.exploration_logger = ExplorationLogger(config.logdir, config.l_class)
@@ -1174,9 +1174,7 @@ class ExplorationEngine:
 
     def _capture_and_analyze(self, step_number: int):
         """通用：截图 + 提取UI树。返回 (screenshot_path, elements, ui_tree_text)"""
-        screenshot_path = self.ui_analyzer.capture_screenshot(
-            self.config.logdir, f"step{step_number}"
-        )
+        screenshot_path = self.ui_analyzer.capture_screenshot(f"step{step_number}")
         if not screenshot_path:
             return "", [], ""
         elements = self.ui_analyzer.extract_ui_tree()
