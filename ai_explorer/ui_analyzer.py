@@ -166,7 +166,8 @@ class UIAnalyzer:
         for child in children:
             self._flatten_hierarchy(child, result, path=current_path, depth=depth + 1)
 
-    def _traverse_poco_proxy(self, poco, result: list):
+    @staticmethod
+    def _traverse_poco_proxy(poco, result: list):
         """备用方案：通过Poco代理API遍历UI树。"""
         try:
             root = poco("*")
@@ -217,7 +218,8 @@ class UIAnalyzer:
         except Exception as e:
             logger.error(f"Poco代理遍历失败: {e}")
 
-    def format_ui_tree_text(self, elements: List[UIElement]) -> str:
+    @staticmethod
+    def format_ui_tree_text(elements: List[UIElement]) -> str:
         """将UI元素列表格式化为可读文本，用于AI提示词。"""
         if not elements:
             return "(UI树不可用 - 仅分析截图)"

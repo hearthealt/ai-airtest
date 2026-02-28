@@ -149,7 +149,6 @@ def get_system_prompt() -> str:
 def get_user_prompt(
     ui_tree_text: str,
     exploration_context: str,
-    visited_screens: list,
     explored_elements: list,
 ) -> str:
     """
@@ -157,7 +156,6 @@ def get_user_prompt(
 
     :param ui_tree_text: 格式化后的UI树文本
     :param exploration_context: 探索上下文信息
-    :param visited_screens: 已访问界面描述列表
     :param explored_elements: 已探索元素名称列表
     :return: 完整的用户提示词
     """

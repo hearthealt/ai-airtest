@@ -20,7 +20,8 @@ class ScreenManager:
         self.screens: Dict[str, ScreenState] = {}
         self.similarity_threshold = similarity_threshold
 
-    def get_fingerprint(self, elements: List[UIElement]) -> str:
+    @staticmethod
+    def get_fingerprint(elements: List[UIElement]) -> str:
         """
         根据UI树结构生成当前界面的指纹。
 

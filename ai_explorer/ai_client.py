@@ -4,7 +4,6 @@
 import base64
 import io
 import json
-import os
 import re
 import time
 import logging
@@ -65,7 +64,6 @@ class AIClient:
         screenshot_path: str,
         ui_tree_text: str,
         exploration_context: str,
-        visited_screens: list,
         explored_elements: list,
     ) -> AIResponse:
         """
@@ -74,7 +72,6 @@ class AIClient:
         :param screenshot_path: 当前截图文件路径
         :param ui_tree_text: 格式化的Poco UI树文本
         :param exploration_context: 探索上下文描述
-        :param visited_screens: 已访问界面描述列表
         :param explored_elements: 已探索元素名称列表
         :return: 解析后的AI响应
         """
@@ -84,7 +81,6 @@ class AIClient:
         user_prompt = get_user_prompt(
             ui_tree_text=ui_tree_text,
             exploration_context=exploration_context,
-            visited_screens=visited_screens,
             explored_elements=explored_elements,
         )
 
@@ -102,14 +98,12 @@ class AIClient:
 
         for attempt in range(self.config.max_retries):
             try:
-                call_start = time.time()
                 response = self.client.chat.completions.create(
                     model=self.config.model,
                     messages=messages,
                     max_tokens=self.config.max_tokens,
                     temperature=self.config.temperature,
                 )
-                call_duration = time.time() - call_start
                 self._call_count += 1
 
                 # iflow key失效: status=434, choices=None
@@ -205,14 +199,12 @@ class AIClient:
 
         for attempt in range(self.config.max_retries):
             try:
-                call_start = time.time()
                 response = self.client.chat.completions.create(
                     model=self.config.model,
                     messages=messages,
                     max_tokens=self.config.max_tokens,
                     temperature=self.config.temperature,
                 )
-                call_duration = time.time() - call_start
                 self._call_count += 1
 
                 # iflow key失效: status=434, choices=None
@@ -236,7 +228,8 @@ class AIClient:
                     logger.error(f"AI API调用在{self.config.max_retries}次尝试后全部失败")
                     return {}
 
-    def _parse_raw_json(self, raw_text: str) -> dict:
+    @staticmethod
+    def _parse_raw_json(raw_text: str) -> dict:
         """解析AI响应为原始JSON dict"""
         text = raw_text.strip()
         if text.startswith("```json"):
@@ -370,7 +363,8 @@ class AIClient:
             raw_response=raw_text,
         )
 
-    def _fallback_response(self, raw_text: str) -> AIResponse:
+    @staticmethod
+    def _fallback_response(raw_text: str) -> AIResponse:
         """解析失败时返回安全的回退响应"""
         return AIResponse(
             screen_description="AI响应解析失败",

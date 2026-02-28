@@ -1,7 +1,6 @@
 # -*- encoding=utf8 -*-
 """核心探索引擎：结构化L1→L2导航阻断测试状态机。"""
 
-import os
 import time
 import logging
 from typing import List, Dict, Optional
@@ -84,7 +83,6 @@ class ExplorationEngine:
             try:
                 self.dd.start_app(app_package)
                 time.sleep(3)
-                logger.info(f"应用已启动: {app_package}")
             except Exception as e:
                 logger.error(f"启动应用失败: {e}")
 
@@ -136,7 +134,7 @@ class ExplorationEngine:
 
     def _execute_state_step(self, step_number: int) -> ExplorationStep:
         """根据当前状态调度到对应的处理方法"""
-        logger.debug(f"[步骤{step_number}] 状态: {self.state.value}")
+        logger.info("=" * 60)
 
         if self.state == EngineState.DISCOVER_L1:
             return self._step_discover_l1(step_number)
@@ -179,7 +177,6 @@ class ExplorationEngine:
             self._pending_popup_coords = self._refine_popup_coords(raw_coords, elements)
             self._pending_popup_text = btn.get("text", "关闭")
             self._pending_popup_type = result.get("popup_type", "other")
-            logger.info(f"[步骤{step_number}] 发现弹窗(类型={self._pending_popup_type})，先处理: {self._pending_popup_text} 坐标={self._pending_popup_coords}")
             return self._make_info_step(step_number, screenshot_path, elements, "发现弹窗，准备处理")
 
         # 解析L1菜单项
@@ -231,7 +228,6 @@ class ExplorationEngine:
             self._pending_popup_coords = self._refine_popup_coords(raw_coords, elements)
             self._pending_popup_text = btn.get("text", "关闭")
             self._pending_popup_type = result.get("popup_type", "other")
-            logger.info(f"[步骤{step_number}] 发现弹窗(类型={self._pending_popup_type})，先处理: {self._pending_popup_text} 坐标={self._pending_popup_coords}")
             return self._make_info_step(step_number, screenshot_path, elements, "发现弹窗，准备处理")
 
         # 解析L2标签
@@ -285,7 +281,7 @@ class ExplorationEngine:
         if back_step:
             return back_step
 
-        logger.info(f"[步骤{step_number}] 切换到L1: '{l1.name}' 坐标={l1.coordinates}")
+        logger.info(f"[步骤{step_number}] 切换到L1: '{l1.name}'")
 
         # 构建点击动作
         action = AIDecision(
@@ -314,7 +310,6 @@ class ExplorationEngine:
         if l1.name in self.menu_structure.l2_map:
             l2_cached = self.menu_structure.l2_map[l1.name]
             if l2_cached:
-                logger.info(f"L1'{l1.name}'已有L2: {len(l2_cached)}个标签 {[i.name for i in l2_cached]}")
                 self.menu_structure.current_l2_index = 0
                 self.state = EngineState.TEST_L2
             else:
@@ -355,7 +350,7 @@ class ExplorationEngine:
                 return back_step
 
         target_name = f"{l1.name}-{l2.name}"
-        logger.info(f"[步骤{step_number}] 点击L2: '{l2.name}'（L1={l1.name}）坐标={l2.coordinates}")
+        logger.info(f"[步骤{step_number}] 点击L2: '{l2.name}'（L1={l1.name}）")
 
         # 点击L2（Poco文本匹配 + 坐标兜底，不用element_name避免匹配到错误元素）
         target_element = UIElement(
@@ -445,7 +440,6 @@ class ExplorationEngine:
             self._pending_popup_coords = self._refine_popup_coords(raw_coords, elements)
             self._pending_popup_text = btn.get("text", "关闭")
             self._pending_popup_type = result.get("popup_type", "other")
-            logger.info(f"[步骤{step_number}] {mode_label}时发现弹窗(类型={self._pending_popup_type})，先处理 坐标={self._pending_popup_coords}")
             return self._make_info_step(step_number, screenshot_path, elements, "发现弹窗，准备处理")
 
         is_error = result.get("is_error_screen", False)
@@ -616,7 +610,6 @@ class ExplorationEngine:
             self._pending_popup_coords = self._refine_popup_coords(raw_coords, elements)
             self._pending_popup_text = btn.get("text", "关闭")
             self._pending_popup_type = result.get("popup_type", "other")
-            logger.info(f"[步骤{step_number}] L1阻断检查时发现弹窗，先处理 坐标={self._pending_popup_coords}")
             return self._make_info_step(step_number, screenshot_path, elements, "发现弹窗，准备处理")
 
         is_error = result.get("is_error_screen", False)
@@ -779,7 +772,7 @@ class ExplorationEngine:
             self._pending_popup_type = ""
             return self._make_info_step(step_number, "", [], "登录弹窗，转入自动登录")
 
-        logger.info(f"[步骤{step_number}] 关闭弹窗: '{self._pending_popup_text}' 坐标={self._pending_popup_coords}")
+        logger.info(f"[步骤{step_number}] 关闭弹窗: '{self._pending_popup_text}'")
 
         # 构建target_element，让ActionExecutor优先用Poco文本匹配点击（比坐标更准）
         target_element = None
@@ -822,7 +815,6 @@ class ExplorationEngine:
 
     def _step_handle_login(self, step_number: int) -> ExplorationStep:
         """自动登录：AI分析登录界面→按步骤填写凭据→点击登录"""
-        logger.debug(f"[步骤{step_number}] 自动登录: 子步骤={self._login_step}")
 
         # 子步骤0：AI分析登录界面
         if self._login_step == 0:
@@ -909,7 +901,7 @@ class ExplorationEngine:
                 self._login_step += 1
                 return self._make_info_step(step_number, "", [], f"输入为空，跳过: {target}")
 
-            logger.info(f"[步骤{step_number}] 登录步骤{exec_index+1}: 输入'{target}' 坐标={coords}")
+            logger.info(f"[步骤{step_number}] 登录步骤{exec_index+1}: 输入'{target}'")
             action = AIDecision(
                 action=ActionType.TEXT_INPUT,
                 coordinates=tuple(coords) if coords else None,
@@ -921,7 +913,7 @@ class ExplorationEngine:
             time.sleep(1)
 
         elif action_type == "click":
-            logger.info(f"[步骤{step_number}] 登录步骤{exec_index+1}: 点击'{target}' 坐标={coords}")
+            logger.info(f"[步骤{step_number}] 登录步骤{exec_index+1}: 点击'{target}'")
             action = AIDecision(
                 action=ActionType.CLICK,
                 coordinates=tuple(coords) if coords else None,
@@ -1007,7 +999,6 @@ class ExplorationEngine:
         场景：上一个L1的最后一个L2跳转了新页面，底部导航栏消失了。
         """
         if self._back_retry_count >= self._max_back_retries:
-            logger.warning(f"返回重试{self._back_retry_count}次L1仍不可见，跳过返回直接尝试点击")
             self._back_retry_count = 0
             return None
 
@@ -1037,18 +1028,14 @@ class ExplorationEngine:
                     break
 
         if other_found > 0:
-            # 其他L1可见但目标不可见，底部导航栏在，直接点击
-            logger.info(f"[步骤{step_number}] 目标L1'{target_l1.name}'不在UI树中，但其他{other_found}个L1可见，尝试点击")
             self._back_retry_count = 0
             return None
 
         # 所有L1都找不到 → 页面跳转了，需要返回
-        logger.info(f"[步骤{step_number}] 当前页面找不到任何L1导航项，需要返回")
+        logger.info(f"[步骤{step_number}] 页面跳转，返回底部导航")
 
         back_elem = self._find_back_button(elements)
         if back_elem:
-            logger.info(f"[步骤{step_number}] 点击返回按钮: desc='{back_elem.desc}' "
-                        f"pos=({back_elem.center[0]:.3f},{back_elem.center[1]:.3f})")
             action = AIDecision(
                 action=ActionType.CLICK,
                 target_element=back_elem,
@@ -1057,7 +1044,6 @@ class ExplorationEngine:
                 reasoning=f"点击返回按钮，回到底部导航",
             )
         else:
-            logger.info(f"[步骤{step_number}] 未找到返回按钮，使用系统返回键")
             action = AIDecision(
                 action=ActionType.BACK,
                 priority=Priority.HIGH,
@@ -1085,7 +1071,6 @@ class ExplorationEngine:
         3. 所有L2标签都找不到 → 页面跳转了，执行返回
         """
         if self._back_retry_count >= self._max_back_retries:
-            logger.warning(f"返回重试{self._back_retry_count}次目标L2仍不可见，跳过返回直接尝试点击")
             self._back_retry_count = 0
             return None
 
@@ -1117,19 +1102,14 @@ class ExplorationEngine:
                     break
 
         if other_found > 0:
-            # 其他L2可见但目标不可见（可能是滚动tab栏），不返回，让Poco文本去找
-            logger.info(f"[步骤{step_number}] 目标L2'{target_l2.name}'不在UI树中，但其他{other_found}个L2可见，尝试Poco文本点击")
             self._back_retry_count = 0
             return None
 
         # 所有L2标签都找不到 → 页面跳转了，需要返回
-        logger.info(f"[步骤{step_number}] 当前页面找不到任何L2标签({[l.name for l in l2_list]})，需要返回L1页面")
+        logger.info(f"[步骤{step_number}] 页面跳转，返回L1页面")
 
-        # 优先用UI树中的返回按钮，找不到则用系统返回键
         back_elem = self._find_back_button(elements)
         if back_elem:
-            logger.info(f"[步骤{step_number}] 点击返回按钮: desc='{back_elem.desc}' "
-                        f"pos=({back_elem.center[0]:.3f},{back_elem.center[1]:.3f})")
             action = AIDecision(
                 action=ActionType.CLICK,
                 target_element=back_elem,
@@ -1138,7 +1118,6 @@ class ExplorationEngine:
                 reasoning=f"点击返回按钮，回到L1页面",
             )
         else:
-            logger.info(f"[步骤{step_number}] 未找到返回按钮，使用系统返回键")
             action = AIDecision(
                 action=ActionType.BACK,
                 priority=Priority.HIGH,
@@ -1157,7 +1136,8 @@ class ExplorationEngine:
             action_taken=action, action_result=action_result, screen_fingerprint="",
         )
 
-    def _find_back_button(self, elements: list) -> Optional[UIElement]:
+    @staticmethod
+    def _find_back_button(elements: list) -> Optional[UIElement]:
         """在UI树中搜索顶部左上角的返回按钮。
 
         匹配条件：
@@ -1207,11 +1187,8 @@ class ExplorationEngine:
         """前进到下一个L1，如果还有则切换，否则完成"""
         if self.menu_structure.advance_l1():
             self.state = EngineState.SWITCH_L1
-            l1 = self.menu_structure.current_l1()
-            logger.info(f"准备切换到下一个L1: '{l1.name if l1 else '?'}'")
         else:
             self.state = EngineState.COMPLETE
-            logger.info("所有L1菜单已遍历完成")
 
     def _record_block_result(self, step_number: int, result_type: str, desc: str, screenshot_path: str):
         """记录阻断测试结果"""
@@ -1241,13 +1218,13 @@ class ExplorationEngine:
                 screen_w, screen_h = self.action_executor._get_screen_size()
                 x = x / screen_w
                 y = y / screen_h
-                logger.debug(f"坐标归一化: {coords} → ({x:.4f}, {y:.4f})")
                 return (x, y)
             except Exception:
                 pass
         return coords
 
-    def _refine_popup_coords(self, coords: tuple, elements: list) -> tuple:
+    @staticmethod
+    def _refine_popup_coords(coords: tuple, elements: list) -> tuple:
         """当AI返回的弹窗关闭按钮坐标可疑时，从UI树中搜索可能的关闭按钮。
 
         关闭按钮特征：小尺寸、可点击、无文字、位于弹窗右上角区域。
@@ -1261,8 +1238,6 @@ class ExplorationEngine:
         is_suspicious = (0.35 <= x <= 0.65) and (0.35 <= y <= 0.65)
         if not is_suspicious:
             return coords
-
-        logger.info(f"弹窗关闭坐标可疑({x:.2f}, {y:.2f})，从UI树搜索关闭按钮...")
 
         candidates = []
         for elem in elements:
@@ -1292,15 +1267,12 @@ class ExplorationEngine:
         if candidates:
             candidates.sort(key=lambda c: c[0], reverse=True)
             best = candidates[0][1]
-            logger.info(f"UI树找到关闭按钮候选: pos=({best.center[0]:.3f}, {best.center[1]:.3f}) "
-                        f"size=({best.bounds.get('width', 0):.3f}x{best.bounds.get('height', 0):.3f}) "
-                        f"text='{best.text}' type={best.type}")
             return best.center
 
-        logger.debug("UI树中未找到关闭按钮候选，使用AI原始坐标")
         return coords
 
-    def _make_info_step(self, step_number, screenshot_path, elements, description):
+    @staticmethod
+    def _make_info_step(step_number, screenshot_path, elements, description):
         """创建信息性步骤（非操作）"""
         return ExplorationStep(
             step_number=step_number,
@@ -1316,7 +1288,8 @@ class ExplorationEngine:
             screen_fingerprint="",
         )
 
-    def _make_error_step(self, step_number, screenshot_path, reason):
+    @staticmethod
+    def _make_error_step(step_number, screenshot_path, reason):
         return ExplorationStep(
             step_number=step_number, timestamp=time.time(),
             screenshot_path=screenshot_path, screen_description=reason,

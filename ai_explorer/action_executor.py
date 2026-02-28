@@ -44,11 +44,6 @@ class ActionExecutor:
         :return: "success"（成功）, "failed"（失败）, 或 "error"（异常）
         """
         action = decision.action
-        logger.debug(
-            f"执行操作: {action.value} | "
-            f"目标={decision.target_element.text if decision.target_element else '无'} | "
-            f"坐标={decision.coordinates}"
-        )
 
         try:
             if action == ActionType.CLICK:
@@ -85,10 +80,9 @@ class ActionExecutor:
                 elem = poco(text=el.text)
                 if elem.exists():
                     elem.click()
-                    logger.info(f"点击方式=Poco文本 '{el.text}'")
                     return "success"
             except Exception as e:
-                logger.debug(f"Poco文本点击失败: {e}")
+                pass
 
         # 策略2：通过Poco描述匹配点击
         if poco and el and getattr(el, 'desc', ''):
@@ -96,10 +90,9 @@ class ActionExecutor:
                 elem = poco(desc=el.desc)
                 if elem.exists():
                     elem.click()
-                    logger.info(f"点击方式=Poco描述 '{el.desc}'")
                     return "success"
             except Exception as e:
-                logger.debug(f"Poco描述点击失败: {e}")
+                pass
 
         # 策略3：通过Poco名称匹配点击（跳过通用控件类名，且要求唯一匹配）
         if poco and el and el.name and not self._is_generic_name(el.name):
@@ -113,13 +106,12 @@ class ActionExecutor:
                     except Exception:
                         count = 1
                     if count > 1:
-                        logger.debug(f"Poco名称 '{el.name}' 匹配到{count}个元素，跳过")
+                        pass
                     else:
                         elems.click()
-                        logger.info(f"点击方式=Poco名称 '{el.name}'")
                         return "success"
             except Exception as e:
-                logger.debug(f"Poco名称点击失败: {e}")
+                pass
 
         # 策略4：通过Poco坐标点击
         coords = decision.coordinates
@@ -129,10 +121,9 @@ class ActionExecutor:
         if coords and poco:
             try:
                 poco.click(coords)
-                logger.info(f"点击方式=Poco坐标 {coords}")
                 return "success"
             except Exception as e:
-                logger.debug(f"Poco坐标点击失败: {e}")
+                pass
 
         # 策略5：通过Airtest绝对坐标点击（最终兜底）
         if coords:
@@ -142,7 +133,6 @@ class ActionExecutor:
                 abs_y = int(coords[1] * screen_h)
                 from airtest.core.api import touch
                 touch((abs_x, abs_y))
-                logger.info(f"点击方式=Airtest坐标 ({abs_x}, {abs_y})")
                 return "success"
             except Exception as e:
                 logger.error(f"Airtest坐标点击失败: {e}")
@@ -194,7 +184,7 @@ class ActionExecutor:
             self.dd.swipe(0.5, 0.5, direction, 500)
             return "success"
         except Exception as e:
-            logger.debug(f"DeviceDriver滑动失败: {e}")
+            pass
 
         # 兜底：使用Airtest滑动
         try:

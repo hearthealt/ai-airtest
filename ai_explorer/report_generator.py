@@ -256,7 +256,8 @@ document.addEventListener('keydown',function(e){{ if(e.key==='Escape') document.
         logger.info(f"HTML报告已生成: {html_path}")
         return html_path
 
-    def generate_json(self, result: ExplorationResult, output_dir: str, l_class: str = "") -> str:
+    @staticmethod
+    def generate_json(result: ExplorationResult, output_dir: str, l_class: str = "") -> str:
         """
         生成JSON格式的测试摘要报告。
 
@@ -301,7 +302,8 @@ document.addEventListener('keydown',function(e){{ if(e.key==='Escape') document.
 
     # ==================== 私有构建方法 ====================
 
-    def _img_src(self, path: str) -> str:
+    @staticmethod
+    def _img_src(path: str) -> str:
         """将截图转为base64 data URL，使报告完全自包含"""
         if not path or not os.path.exists(path):
             return ""
@@ -315,7 +317,8 @@ document.addEventListener('keydown',function(e){{ if(e.key==='Escape') document.
         except Exception:
             return "file:///" + path.replace("\\", "/")
 
-    def _badge(self, result_str: str) -> str:
+    @staticmethod
+    def _badge(result_str: str) -> str:
         """为步骤结果生成对应样式的标签"""
         m = {
             "success": ("成功", "bg-ok"),
@@ -328,7 +331,8 @@ document.addEventListener('keydown',function(e){{ if(e.key==='Escape') document.
         text, cls = m.get(result_str, (result_str, "bg-ok"))
         return f'<span class="bg {cls}">{text}</span>'
 
-    def _strip_prefix(self, desc: str) -> str:
+    @staticmethod
+    def _strip_prefix(desc: str) -> str:
         """去掉阻断描述的前缀"""
         for prefix in ("阻断成功: ", "阻断失败: ", "阻断成功（持续loading）: "):
             if desc.startswith(prefix):

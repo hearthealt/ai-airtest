@@ -49,7 +49,6 @@ class AIDeviceDriver:
         :param app_package: 应用包名（为空则跳过启动，直接从当前界面开始）
         :return: 探索结果对象
         """
-        logger.info("开始AI探索性测试会话")
         result = self.engine.run(app_package)
 
         successes = sum(1 for i in result.issues_found if i["type"] == "block_success")
@@ -104,7 +103,6 @@ class AIDeviceDriver:
             screenshot_path=screenshot,
             ui_tree_text=ui_text,
             exploration_context=f"用户想要点击: {description}",
-            visited_screens=[],
             explored_elements=[],
         )
 
@@ -139,7 +137,6 @@ class AIDeviceDriver:
             screenshot_path=screenshot,
             ui_tree_text=ui_text,
             exploration_context=f"断言检查: 验证当前界面是否满足 '{description}'",
-            visited_screens=[],
             explored_elements=[],
         )
         return not response.is_error_screen
