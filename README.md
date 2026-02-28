@@ -1,226 +1,215 @@
-# AI驱动的探索性UI测试框架
+# AI驱动的L1/L2导航测试框架
 
-基于 Airtest + Poco + qwen3-vl-plus 视觉语言模型的智能自动化探索测试工具。
+基于 Airtest + Poco + qwen3-vl-plus 视觉语言模型，自动遍历应用的底部导航（L1）和顶部标签栏（L2），验证每个页面的阻断/功能状态。
 
-## 简介
+## 核心功能
 
-本框架通过AI视觉模型自动分析应用界面截图和UI层级结构，智能决策下一步操作，实现对移动应用/桌面应用的全自动探索性测试。相比传统的Monkey测试，本框架具备：
+- **结构化导航遍历**：状态机驱动，按 L1(底部导航) → L2(顶部Tab) 的层级逐个点击测试
+- **双模式测试**：mode=0 阻断测试（验证页面是否被成功阻断），mode=1 功能测试（验证页面是否正常加载）
+- **AI视觉判断**：截图 + Poco UI树同时送入AI模型，判断页面状态（阻断成功/失败/加载中）
+- **智能弹窗处理**：自动识别并关闭遮挡导航控件的弹窗，忽略不影响操作的小广告
+- **页面跳转自动返回**：点击L2后如果跳转到新页面，自动检测并返回原页面继续测试
+- **多级点击降级**：Poco文本 → 描述 → 名称（唯一性校验）→ Poco坐标 → Airtest绝对坐标
+- **自动登录**（可选）：遇到登录界面时，AI识别输入框和按钮位置，自动填写凭据完成登录
+- **HTML/JSON报告**：自包含HTML报告，内嵌截图，支持点击放大查看
 
-- **智能决策**：AI分析截图+UI树，理解界面语义，优先探索未覆盖的功能
-- **自动去重**：界面指纹识别，避免在已探索界面上重复操作
-- **弹窗处理**：自动识别并关闭权限弹窗、广告弹窗等干扰
-- **覆盖追踪**：实时跟踪元素探索覆盖率，达标自动停止
-- **完整报告**：生成HTML可视化报告，包含截图、步骤、导航图、问题列表
-
-## 系统流程
+## 状态机流程
 
 ```
-开始
- ↓
-应用启动·初始化环境
- ↓
-捕获当前界面截图 + UI结构  ←───────────┐
- ↓                                      │
-POCO UI树分析                           │
- ↓                                      │
-AI决策优化模块                           │
- ├── 提取功能点·构建探索矩阵             │
- └── 智能路径规划·优先级排序             │
- ↓                                      │
-发送至AI助手分析识别                     │
- ↓                                      │
-AI返回控件信息（坐标/类型/优先级）        │
- ↓                                      │
-执行点击操作（Airtest/Poco）             │
- ↓                                      │
-验证结果·记录日志                        │
- ↓                                      │
-是否达到测试目标？ ── 否 ───────────────┘
- │
- 是
- ↓
-生成报告·结束流程
+DISCOVER_L1  ──→  DISCOVER_L2  ──→  TEST_L2  ──→  CHECK_BLOCK
+  识别底部导航        识别顶部Tab       点击L2         检查页面状态
+       │                  │               │               │
+       │                  │               │         ┌─────┴─────┐
+       │                  │               │    阻断成功     阻断失败
+       │                  │               │    记录结果     记录结果
+       │                  │               │         └─────┬─────┘
+       │                  │               │               │
+       │                  │          还有下一个L2?  ←──────┘
+       │                  │          是 → 回到TEST_L2
+       │                  │          否 → SWITCH_L1
+       │                  │                    │
+       │                  │               还有下一个L1?
+       │                  │               是 → 回到DISCOVER_L2
+       │                  │               否 → COMPLETE
+       │                  │
+       ↓                  ↓
+  HANDLE_POPUP ←── 任何步骤检测到遮挡弹窗时进入
+  HANDLE_LOGIN ←── 检测到登录弹窗且login_required=true时进入
 ```
 
 ## 项目结构
 
 ```
-E:\airtest\
-├── ai_explorer\                     # AI探索框架核心包
-│   ├── __init__.py                  # 包初始化
-│   ├── models.py                    # 数据结构定义（UIElement, AIDecision, AIResponse等）
-│   ├── config.py                    # 配置管理（AI配置, 探索配置, 应用配置）
-│   ├── prompts.py                   # AI提示词模板（系统提示词+用户提示词）
-│   ├── ai_client.py                 # AI客户端（发送截图+UI树，解析JSON响应）
-│   ├── ui_analyzer.py               # UI分析器（截图捕获, Poco UI树提取）
-│   ├── screen_state.py              # 界面状态管理（指纹生成, 去重, 探索进度）
-│   ├── action_executor.py           # 操作执行器（AI决策 → Airtest/Poco操作）
-│   ├── exploration_engine.py        # 探索引擎（核心主循环）
-│   ├── device_driver_ext.py         # AI增强驱动器（包装DeviceDriver）
-│   ├── logger.py                    # 结构化日志记录
-│   └── report_generator.py          # HTML/JSON报告生成
-├── run_explorer.py                  # 命令行入口
-├── requirements_explorer.txt        # 依赖包
-└── plugins/                         # 现有的手动测试用例（不影响）
+ai_explorer/
+├── exploration_engine.py   # 核心状态机引擎（L1→L2遍历、弹窗处理、页面跳转检测）
+├── ai_client.py            # AI视觉模型客户端（OpenAI兼容API，截图+UI树→JSON响应）
+├── action_executor.py      # 操作执行器（多级降级点击、滑动、文本输入、返回）
+├── ui_analyzer.py          # UI分析器（Poco UI树提取、截图捕获、元素格式化）
+├── prompts.py              # AI提示词模板（L1发现、L2发现、阻断检查、功能检查、登录分析）
+├── models.py               # 数据结构（EngineState、MenuStructure、UIElement、AIDecision等）
+├── config.py               # 配置管理（AI、设备、探索行为、路由器、登录）
+├── screen_state.py         # 界面指纹与去重
+├── device_driver_ext.py    # AIDeviceDriver（封装DeviceDriver，提供explore/ai_click/ai_assert）
+├── report_generator.py     # HTML/JSON测试报告生成
+└── logger.py               # 结构化JSONL日志
+
+run_explorer.py             # 入口脚本
+config.yaml.example         # 配置模板
+requirements.txt            # Python依赖
 ```
 
-## 环境要求
+## 快速开始
 
-- Python 3.8+
-- Airtest + Poco（已安装在现有项目中）
-- OpenAI Python SDK
-
-## 安装
+### 1. 安装依赖
 
 ```bash
-pip install -r requirements_explorer.txt
+pip install -r requirements.txt
 ```
 
-## 使用方式
-
-### 方式一：命令行运行
+### 2. 创建配置文件
 
 ```bash
-# 基本用法：指定应用包名和设备
-python run_explorer.py --package tv.danmaku.bili --uuid YOUR_DEVICE_ID
-
-# 指定最大步数和时长
-python run_explorer.py --package com.example.app --uuid DEVICE_ID --max-steps 50 --max-time 600
-
-# 使用配置文件
-python run_explorer.py --config explorer_config.json
-
-# iOS设备
-python run_explorer.py --package com.example.app --platform IOS --uri http://localhost:8100
-
-# Windows桌面应用
-python run_explorer.py --platform Windows --window "应用窗口名称"
+cp config.yaml.example config.yaml
+# 编辑 config.yaml，填入实际的设备UUID、AI API Key等
 ```
 
-### 方式二：代码集成
+### 3. 运行测试
+
+```bash
+python run_explorer.py
+```
+
+程序会自动读取项目根目录的 `config.yaml`，连接设备，启动应用，执行L1→L2遍历测试。
+
+## 配置说明
+
+配置文件为 YAML 格式，完整示例见 `config.yaml.example`。
+
+### 必填项
+
+```yaml
+package_name: "tv.danmaku.bili"       # 应用包名
+l_class: "23921"                       # 小类ID（用于阻断规则索引和文件命名）
+mode: 0                                # 0=阻断测试, 1=功能测试
+
+device:
+  platform: "Android"                  # Android / IOS / Windows
+  device_uuid: "your-device-uuid"
+
+ai:
+  api_base_url: "https://apis.iflow.cn/v1"
+  api_key: "your-api-key"
+  model: "qwen3-vl-plus"
+```
+
+### 可选项
+
+```yaml
+# 登录配置（遇到登录界面时自动登录）
+login:
+  required: false
+  phone: ""
+  password: ""
+  method: "password"                   # password / sms
+
+# 路由器阻断规则（仅 mode=0 时使用）
+router:
+  router_host: "192.168.254.122"
+  router_port: 22
+  router_user: "admin"
+  router_pwd: "your-password"
+  router_enable_pwd: "your-enable-password"
+
+# 探索行为
+exploration:
+  max_steps: 200                       # 最大步数
+  max_duration_seconds: 1800           # 最大时长（秒）
+  action_delay: 2.0                    # 每步操作后等待（秒）
+  screenshot_delay: 10.0               # 截图前等待（秒）
+  max_errors: 10                       # 连续错误上限
+
+# 输出
+output_dir: "E:\\tmp\\explore"         # 日志和报告输出目录
+```
+
+## 操作执行策略
+
+点击操作采用5级降级策略，逐级尝试直到成功：
+
+| 优先级 | 方式 | 说明 |
+|--------|------|------|
+| 1 | Poco文本匹配 | `poco(text="xxx").click()` 最可靠 |
+| 2 | Poco描述匹配 | `poco(desc="xxx").click()` content-description |
+| 3 | Poco名称匹配 | `poco(name="xxx").click()` 跳过通用类名，要求唯一匹配 |
+| 4 | Poco坐标点击 | `poco.click((x, y))` 归一化坐标 |
+| 5 | Airtest绝对坐标 | `touch((abs_x, abs_y))` 最终兜底 |
+
+名称匹配会自动过滤 `android.widget.*`、`android.view.*` 等通用类名，且匹配到多个元素时跳过。
+
+## 弹窗处理规则
+
+只处理**遮挡了导航控件**的弹窗：
+
+| 处理 | 不处理 |
+|------|--------|
+| 隐私政策/用户协议（点同意） | 底部小广告横幅 |
+| 系统权限弹窗（点允许） | 角落悬浮广告图标 |
+| 大面积广告/引导（点关闭） | 页面内嵌推荐卡片 |
+| 登录弹窗/浮层（点关闭或自动登录） | 不挡Tab的通知条 |
+| 青少年模式弹窗（点我知道了） | |
+
+## 输出文件
+
+测试完成后在 `output_dir/l_class/` 目录下生成：
+
+| 文件 | 说明 |
+|------|------|
+| `{l_class}.html` | 自包含HTML报告（内嵌截图，可点击放大） |
+| `{l_class}.json` | JSON格式摘要（步骤、结果、统计） |
+| `{l_class}.jsonl` | 每步结构化日志（JSON行格式） |
+| `{l_class}.log` | 控制台运行日志 |
+| `{l_class}_detail.log` | 详细模块日志 |
+| `{l_class}-*.jpg` | 每步界面截图 |
+
+## 代码集成
 
 ```python
-from airtest.core.api import using
-using(r"E:\airtest-workspace\common.air")
-from common import DeviceDriver
-
 from ai_explorer.config import Config
 from ai_explorer.device_driver_ext import AIDeviceDriver
 
-# 1. 初始化设备驱动（复用现有的DeviceDriver）
-device_info = {
-    "platform": "Android",
-    "uuid": "YOUR_DEVICE_ID",
-    "uri": "",
-    "poco_type": "",
-}
-dd = DeviceDriver(device_info, r"E:\tmp\explore\logs")
+config = Config.load()  # 自动读取 config.yaml
 
-# 2. 创建AI增强驱动
-config = Config()
-config.logdir = r"E:\tmp\explore\logs"
+# dd = 已初始化的 DeviceDriver 实例
 ai_dd = AIDeviceDriver(dd, config)
-
-# 3. 运行探索测试
-result = ai_dd.explore("tv.danmaku.bili")
-
-# 4. 生成报告
-report_path = ai_dd.generate_report(result)
-print(f"报告路径: {report_path}")
+result = ai_dd.explore(config.package_name)
+ai_dd.generate_report(result)
 ```
 
-### 方式三：AI辅助单步操作
+### AI辅助单步操作
 
 ```python
-# AI辅助点击：用自然语言描述目标
+# 自然语言点击
 ai_dd.ai_click("登录按钮")
 ai_dd.ai_click("底部的设置标签")
-ai_dd.ai_click("搜索框")
 
-# AI辅助断言：用自然语言描述期望状态
+# 自然语言断言
 assert ai_dd.ai_assert("已进入首页")
 assert ai_dd.ai_assert("显示了登录错误提示")
 ```
 
-## 配置说明
+## 支持平台
 
-### JSON配置文件示例
+| 平台 | Poco UI树 | 说明 |
+|------|-----------|------|
+| Android | 支持 | 截图 + UI树 + AI分析 |
+| iOS | 支持 | 截图 + UI树 + AI分析 |
+| Windows | 不支持 | 仅截图 + AI视觉分析 |
 
-```json
-{
-  "ai": {
-    "api_base_url": "https://apis.iflow.cn/v1",
-    "api_key": "your-api-key",
-    "model": "qwen3-vl-plus",
-    "temperature": 0.3,
-    "max_tokens": 4096
-  },
-  "exploration": {
-    "max_steps": 200,
-    "max_duration_seconds": 1800,
-    "coverage_target": 0.8,
-    "strategy": "priority_bfs",
-    "action_delay": 2.0,
-    "max_consecutive_duplicates": 5
-  },
-  "app": {
-    "package_name": "tv.danmaku.bili",
-    "platform": "Android",
-    "device_uuid": "YOUR_DEVICE_ID"
-  },
-  "logdir": "E:\\tmp\\explore\\bilibili"
-}
-```
+## 依赖
 
-### 主要配置项
-
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| `max_steps` | 200 | 最大探索步数 |
-| `max_duration_seconds` | 1800 | 最大探索时长（秒） |
-| `coverage_target` | 0.8 | 目标覆盖率（0-1） |
-| `strategy` | priority_bfs | 探索策略（priority_bfs/bfs/dfs/random） |
-| `action_delay` | 2.0 | 每步操作后等待时间（秒） |
-| `max_consecutive_duplicates` | 5 | 连续重复界面停止阈值 |
-| `max_errors` | 10 | 连续错误停止阈值 |
-| `auto_dismiss_keywords` | [允许,确定,...] | 自动关闭弹窗的关键词 |
-
-## 停止条件
-
-探索会在满足以下任一条件时自动停止：
-
-1. 达到最大步数（默认200步）
-2. 达到最大时长（默认30分钟）
-3. 探索覆盖率达到目标（默认80%）
-4. 连续访问重复界面（默认5次）
-5. 连续操作出错（默认10次）
-
-## 输出文件
-
-探索完成后，日志目录中会生成以下文件：
-
-| 文件 | 说明 |
-|------|------|
-| `exploration_report.html` | HTML可视化报告（含截图、步骤表、导航图） |
-| `exploration_report.json` | JSON格式摘要报告 |
-| `exploration_log.jsonl` | 每步记录的结构化日志（JSON行格式） |
-| `exploration.log` | 人类可读的详细运行日志 |
-| `console.log` | 控制台输出日志 |
-| `explore-step*.jpg` | 每步的界面截图 |
-
-## 操作执行策略
-
-操作执行采用多级降级策略，确保最大兼容性：
-
-1. **Poco文本匹配** → 通过元素文本定位并点击（最可靠）
-2. **Poco名称匹配** → 通过元素name/resource-id定位
-3. **Poco坐标点击** → 使用归一化坐标通过Poco点击
-4. **Airtest绝对坐标** → 转换为屏幕绝对坐标点击（最终兜底）
-
-## 支持的平台
-
-| 平台 | Poco支持 | 说明 |
-|------|----------|------|
-| Android | 支持 | 完整的截图+UI树+AI分析 |
-| iOS | 支持 | 完整的截图+UI树+AI分析 |
-| Windows | 不支持 | 仅截图+AI视觉分析（无UI树） |
+- Python 3.8+
+- openai >= 1.0.0
+- Pillow >= 9.0.0
+- PyYAML >= 6.0
+- airtest >= 1.3.0
+- pocoui >= 1.0.90
