@@ -19,7 +19,8 @@ from .models import (
 from .prompts import (
     get_system_prompt, get_user_prompt,
     get_discover_l1_system_prompt, get_discover_l2_system_prompt,
-    get_block_check_system_prompt,
+    get_block_check_system_prompt, get_function_check_system_prompt,
+    get_login_system_prompt,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,7 +94,6 @@ class AIClient:
                 raw_text = response.choices[0].message.content
                 if response.usage:
                     self._total_tokens += response.usage.total_tokens
-                logger.info(f"AI响应成功（{call_duration:.1f}秒）")
                 return self._parse_response(raw_text)
 
             except Exception as e:
@@ -125,14 +125,35 @@ class AIClient:
         user_prompt = f"当前在一级页面'{l1_name}'。分析截图，识别顶部标签栏的所有二级Tab。\n\n## UI层级结构\n{ui_tree_text}"
         return self._call_ai_raw(screenshot_path, system_prompt, user_prompt)
 
-    def check_block_status(self, screenshot_path: str, ui_tree_text: str, target_name: str) -> dict:
-        """调用AI检查页面阻断状态，返回原始JSON dict"""
-        system_prompt = get_block_check_system_prompt()
+    def check_block_status(self, screenshot_path: str, ui_tree_text: str, target_name: str, mode: int = 0) -> dict:
+        """调用AI检查页面状态，返回原始JSON dict。mode=0阻断检查，mode=1功能检查"""
+        if mode == 1:
+            system_prompt = get_function_check_system_prompt()
+            user_prompt = (
+                f"你刚刚点击了'{target_name}'进入了这个页面。\n"
+                f"请仔细检查：这个页面是否正常加载了真实的业务数据？\n"
+                f"还是出现了错误/白屏/崩溃？\n"
+                f"注意：弹窗（权限/广告等）不算页面内容，忽略弹窗看底下的页面。\n\n"
+                f"## UI层级结构\n{ui_tree_text}"
+            )
+        else:
+            system_prompt = get_block_check_system_prompt()
+            user_prompt = (
+                f"你刚刚点击了'{target_name}'进入了这个页面。\n"
+                f"请仔细检查：这个页面是否被阻断了（加载失败/没有数据/报错）？\n"
+                f"还是数据正常加载出来了？\n"
+                f"注意：弹窗（权限/广告等）不算页面内容，忽略弹窗看底下的页面。\n\n"
+                f"## UI层级结构\n{ui_tree_text}"
+            )
+        return self._call_ai_raw(screenshot_path, system_prompt, user_prompt)
+
+    def analyze_login_screen(self, screenshot_path: str, ui_tree_text: str, login_method: str = "password") -> dict:
+        """调用AI分析登录界面，返回登录元素位置和操作步骤"""
+        system_prompt = get_login_system_prompt()
         user_prompt = (
-            f"你刚刚点击了'{target_name}'进入了这个页面。\n"
-            f"请仔细检查：这个页面是否被阻断了（加载失败/没有数据/报错）？\n"
-            f"还是数据正常加载出来了？\n"
-            f"注意：弹窗（权限/广告等）不算页面内容，忽略弹窗看底下的页面。\n\n"
+            f"分析当前截图中的登录界面。\n"
+            f"期望的登录方式: {login_method}（密码登录=password，验证码登录=sms）\n"
+            f"请识别所有登录相关的输入框、按钮位置，并给出操作步骤。\n\n"
             f"## UI层级结构\n{ui_tree_text}"
         )
         return self._call_ai_raw(screenshot_path, system_prompt, user_prompt)
@@ -164,7 +185,6 @@ class AIClient:
                 raw_text = response.choices[0].message.content
                 if response.usage:
                     self._total_tokens += response.usage.total_tokens
-                logger.info(f"AI响应成功（{call_duration:.1f}秒）")
                 return self._parse_raw_json(raw_text)
             except Exception as e:
                 logger.warning(f"AI API调用第{attempt+1}次尝试失败: {e}")

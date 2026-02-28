@@ -8,7 +8,7 @@ from typing import List, Dict, Optional
 
 from .config import Config
 from .models import (
-    AIDecision, ActionType, Priority,
+    AIDecision, ActionType, Priority, UIElement, ControlType,
     ExplorationStep, ExplorationResult,
     EngineState, MenuItemInfo, MenuStructure,
 )
@@ -17,7 +17,6 @@ from .ui_analyzer import UIAnalyzer
 from .screen_state import ScreenManager
 from .action_executor import ActionExecutor
 from .logger import ExplorationLogger
-from .nav_cache import NavCacheDB
 
 logger = logging.getLogger(__name__)
 
@@ -62,16 +61,23 @@ class ExplorationEngine:
         # 弹窗处理
         self._pending_popup_coords: Optional[tuple] = None
         self._pending_popup_text: str = ""
+        self._pending_popup_type: str = ""  # 弹窗类型: login/permission/ad/other
         self.popup_retry_count = 0
         self.max_popup_retries = 3
 
-        # 导航缓存
-        db_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "nav_cache.db")
-        self.nav_cache = NavCacheDB(db_path)
+        # 登录处理
+        self._login_step: int = 0  # 登录子步骤
+        self._login_analysis: dict = {}  # AI返回的登录分析结果
+        self._login_retries: int = 0
+        self.max_login_retries: int = 3
+
+        # 返回导航（L2跳转新页面后需返回）
+        self._back_retry_count: int = 0
+        self._max_back_retries: int = 3
 
     def run(self, app_package: str = "") -> ExplorationResult:
         self.start_time = time.time()
-        self.app_package = app_package  # 保存供缓存使用
+        self.app_package = app_package
         logger.info(f"=== 结构化阻断测试开始 | 应用={app_package} ===")
 
         if app_package:
@@ -82,19 +88,7 @@ class ExplorationEngine:
             except Exception as e:
                 logger.error(f"启动应用失败: {e}")
 
-        # 应用启动后，先尝试消除已知弹窗（不用AI）
-        if self.config.use_nav_cache and app_package and self.nav_cache.has_popups(app_package, self.config.l_class):
-            self._dismiss_cached_popups(app_package)
-
-        # 尝试从缓存加载导航结构
-        if self.config.use_nav_cache and app_package and self.nav_cache.has_cache(app_package, self.config.l_class):
-            self.menu_structure = self.nav_cache.load_menu_structure(app_package, self.config.l_class)
-            l1_count = len(self.menu_structure.l1_items)
-            l2_count = sum(len(v) for v in self.menu_structure.l2_map.values())
-            logger.info(f"从缓存加载导航: {l1_count}个L1, {l2_count}个L2")
-            self.state = EngineState.SWITCH_L1  # 跳过发现，直接开始测试
-        else:
-            self.state = EngineState.DISCOVER_L1  # 首次运行，AI发现
+        self.state = EngineState.DISCOVER_L1
 
         step_number = 0
         while not self._should_stop(step_number):
@@ -112,7 +106,7 @@ class ExplorationEngine:
                 else:
                     self.consecutive_errors = 0
 
-                if self.blocking_failure:
+                if self.blocking_failure and self.config.mode == 0:
                     logger.error(f"★ 阻断失败！'{self.last_clicked_target}' 页面正常加载了数据，测试终止")
                     break
 
@@ -127,7 +121,12 @@ class ExplorationEngine:
                 self.consecutive_errors += 1
                 time.sleep(self.config.exploration.action_delay)
 
-        if self.blocking_failure:
+        if self.config.mode == 1:
+            # 功能测试模式：统计正常/异常
+            successes = [i for i in self.issues_found if i["type"] == "function_success"]
+            failures = [i for i in self.issues_found if i["type"] == "function_failure"]
+            logger.info(f"=== 功能测试结果: {len(successes)}个正常, {len(failures)}个异常 | 已测控件: {self.tested_controls} ===")
+        elif self.blocking_failure:
             logger.info(f"=== 测试结果: 阻断失败 | 共{len(self.steps)}步 ===")
         else:
             logger.info(f"=== 测试结果: 全部阻断成功 | 已测控件: {self.tested_controls} ===")
@@ -137,7 +136,7 @@ class ExplorationEngine:
 
     def _execute_state_step(self, step_number: int) -> ExplorationStep:
         """根据当前状态调度到对应的处理方法"""
-        logger.info(f"[步骤{step_number}] 状态: {self.state.value}")
+        logger.debug(f"[步骤{step_number}] 状态: {self.state.value}")
 
         if self.state == EngineState.DISCOVER_L1:
             return self._step_discover_l1(step_number)
@@ -155,6 +154,8 @@ class ExplorationEngine:
             return self._step_check_l1_block(step_number)
         elif self.state == EngineState.HANDLE_POPUP:
             return self._step_handle_popup(step_number)
+        elif self.state == EngineState.HANDLE_LOGIN:
+            return self._step_handle_login(step_number)
         else:
             return self._make_error_step(step_number, "", f"未知状态: {self.state.value}")
 
@@ -174,10 +175,12 @@ class ExplorationEngine:
             self.previous_state = EngineState.DISCOVER_L1
             self.state = EngineState.HANDLE_POPUP
             btn = result["popup_close_button"]
-            self._pending_popup_coords = tuple(btn.get("coordinates", (0.5, 0.5)))
+            raw_coords = self._normalize_coords(tuple(btn.get("coordinates", (0.5, 0.5))))
+            self._pending_popup_coords = self._refine_popup_coords(raw_coords, elements)
             self._pending_popup_text = btn.get("text", "关闭")
-            logger.info(f"[步骤{step_number}] 发现弹窗，先关闭: {self._pending_popup_text}")
-            return self._make_info_step(step_number, screenshot_path, elements, "发现弹窗，准备关闭")
+            self._pending_popup_type = result.get("popup_type", "other")
+            logger.info(f"[步骤{step_number}] 发现弹窗(类型={self._pending_popup_type})，先处理: {self._pending_popup_text} 坐标={self._pending_popup_coords}")
+            return self._make_info_step(step_number, screenshot_path, elements, "发现弹窗，准备处理")
 
         # 解析L1菜单项
         l1_items = []
@@ -199,10 +202,6 @@ class ExplorationEngine:
         if not l1_items:
             self.state = EngineState.COMPLETE
             return self._make_info_step(step_number, screenshot_path, elements, "未发现L1菜单，测试完成")
-
-        # 保存L1到缓存（L2将在发现后逐步更新）
-        if self.config.use_nav_cache and self.app_package:
-            self.nav_cache.save_menu_structure(self.app_package, self.config.l_class, self.menu_structure)
 
         # 第一个L1通常已选中，直接进入发现L2
         self.state = EngineState.DISCOVER_L2
@@ -228,32 +227,37 @@ class ExplorationEngine:
             self.previous_state = EngineState.DISCOVER_L2
             self.state = EngineState.HANDLE_POPUP
             btn = result["popup_close_button"]
-            self._pending_popup_coords = tuple(btn.get("coordinates", (0.5, 0.5)))
+            raw_coords = self._normalize_coords(tuple(btn.get("coordinates", (0.5, 0.5))))
+            self._pending_popup_coords = self._refine_popup_coords(raw_coords, elements)
             self._pending_popup_text = btn.get("text", "关闭")
-            logger.info(f"[步骤{step_number}] 发现弹窗，先关闭: {self._pending_popup_text}")
-            return self._make_info_step(step_number, screenshot_path, elements, "发现弹窗，准备关闭")
+            self._pending_popup_type = result.get("popup_type", "other")
+            logger.info(f"[步骤{step_number}] 发现弹窗(类型={self._pending_popup_type})，先处理: {self._pending_popup_text} 坐标={self._pending_popup_coords}")
+            return self._make_info_step(step_number, screenshot_path, elements, "发现弹窗，准备处理")
 
         # 解析L2标签
         has_l2 = result.get("has_l2_tabs", False)
         l2_items = []
         if has_l2:
+            found_selected = False
             for item in result.get("l2_items", []):
                 coords = item.get("coordinates", [0, 0])
+                # is_selected只信第一个被AI标记为selected的tab
+                ai_selected = item.get("is_selected", False)
+                is_selected = False
+                if ai_selected and not found_selected:
+                    is_selected = True
+                    found_selected = True
                 l2_items.append(MenuItemInfo(
                     name=item.get("name", ""),
                     element_text=item.get("element_text", item.get("name", "")),
                     element_name=item.get("element_name", ""),
                     coordinates=tuple(coords) if coords else (0, 0),
                     level=2,
-                    is_selected=item.get("is_selected", False),
+                    is_selected=is_selected,
                 ))
 
         self.menu_structure.l2_map[l1.name] = l2_items
         self.menu_structure.current_l2_index = 0
-
-        # 更新缓存中该L1的L2数据
-        if self.config.use_nav_cache and self.app_package:
-            self.nav_cache.update_l2_for_l1(self.app_package, self.config.l_class, l1.name, l2_items)
 
         if l2_items:
             l2_names = [i.name for i in l2_items]
@@ -262,17 +266,24 @@ class ExplorationEngine:
             return self._make_info_step(step_number, screenshot_path, elements,
                                         f"L1'{l1.name}'的L2标签: {l2_names}")
         else:
-            logger.info(f"[步骤{step_number}] L1'{l1.name}'没有L2标签，直接测试L1页面")
             self.state = EngineState.TEST_L1_DIRECT
             return self._make_info_step(step_number, screenshot_path, elements,
                                         f"L1'{l1.name}'无L2标签")
 
     def _step_switch_l1(self, step_number: int) -> ExplorationStep:
-        """切换L1：确定性点击下一个L1的坐标（无AI调用）"""
+        """切换L1：点击下一个L1底部导航项。
+
+        点击前先检查目标L1是否在UI树中可见，不可见说明上一个L2跳转了新页面，需要先返回。
+        """
         l1 = self.menu_structure.current_l1()
         if not l1:
             self.state = EngineState.COMPLETE
             return self._make_info_step(step_number, "", [], "所有L1测试完成")
+
+        # 检查目标L1是否在当前页面（上一个L2可能跳转了新页面）
+        back_step = self._check_l1_and_back_if_needed(step_number, l1)
+        if back_step:
+            return back_step
 
         logger.info(f"[步骤{step_number}] 切换到L1: '{l1.name}' 坐标={l1.coordinates}")
 
@@ -286,35 +297,27 @@ class ExplorationEngine:
         action_result = self.action_executor.execute(action)
 
         if action_result != "success":
-            logger.warning(f"[步骤{step_number}] L1'{l1.name}'点击失败: {action_result}")
-            if self.config.use_nav_cache:
-                logger.warning(f"缓存坐标可能过期，重新AI发现L1")
-                self.nav_cache.delete_cache(self.app_package, self.config.l_class)
-                self.state = EngineState.DISCOVER_L1
-                return ExplorationStep(
-                    step_number=step_number, timestamp=time.time(),
-                    screenshot_path="", screen_description=f"L1'{l1.name}'点击失败，重新发现",
-                    ui_tree_summary="", action_taken=action, action_result=action_result,
-                    screen_fingerprint="",
-                )
+            logger.warning(f"[步骤{step_number}] L1'{l1.name}'点击失败: {action_result}，重新AI发现L1")
+            self.state = EngineState.DISCOVER_L1
+            return ExplorationStep(
+                step_number=step_number, timestamp=time.time(),
+                screenshot_path="", screen_description=f"L1'{l1.name}'点击失败，重新发现",
+                ui_tree_summary="", action_taken=action, action_result=action_result,
+                screen_fingerprint="",
+            )
 
         # 点击后等待页面加载
         time.sleep(self.config.exploration.action_delay)
 
-        # 切换L1后，尝试消除该页面可能出现的缓存弹窗
-        if self.config.use_nav_cache and self.app_package:
-            self._dismiss_cached_popups(self.app_package)
-
-        # 优先使用缓存的L2数据，避免重复AI识别
-        # 区分：key存在(已缓存，可能为空) vs key不存在(未缓存，需AI识别)
+        # 使用已有的L2数据（同一次运行中之前发现过的）
+        # 区分：key存在(已发现，可能为空) vs key不存在(未发现，需AI识别)
         if l1.name in self.menu_structure.l2_map:
             l2_cached = self.menu_structure.l2_map[l1.name]
             if l2_cached:
-                logger.info(f"从缓存使用L1'{l1.name}'的L2: {len(l2_cached)}个标签 {[i.name for i in l2_cached]}")
+                logger.info(f"L1'{l1.name}'已有L2: {len(l2_cached)}个标签 {[i.name for i in l2_cached]}")
                 self.menu_structure.current_l2_index = 0
                 self.state = EngineState.TEST_L2
             else:
-                logger.info(f"缓存确认L1'{l1.name}'无L2标签，直接测试L1页面")
                 self.state = EngineState.TEST_L1_DIRECT
         else:
             self.state = EngineState.DISCOVER_L2
@@ -331,7 +334,13 @@ class ExplorationEngine:
         )
 
     def _step_test_l2(self, step_number: int) -> ExplorationStep:
-        """测试L2：确定性点击当前L2标签的坐标（无AI调用）→ 转CHECK_BLOCK"""
+        """测试L2：点击当前L2标签（优先Poco文本）→ 转CHECK_BLOCK
+
+        点击前先在UI树中查找目标L2控件：
+        - 找到 → 直接点击
+        - 找不到且页面上无任何L2标签 → 说明跳转了新页面，先返回
+        - 找不到但其他L2标签可见 → 可能是可滚动tab，用Poco文本兜底
+        """
         l1 = self.menu_structure.current_l1()
         l2 = self.menu_structure.current_l2()
         if not l1 or not l2:
@@ -339,33 +348,38 @@ class ExplorationEngine:
             self._advance_to_next_l1()
             return self._make_info_step(step_number, "", [], "当前L1的L2全部测完")
 
+        # 非第一个L2时，检查目标L2是否在当前页面
+        if self.menu_structure.current_l2_index > 0:
+            back_step = self._check_l2_and_back_if_needed(step_number, l2)
+            if back_step:
+                return back_step
+
         target_name = f"{l1.name}-{l2.name}"
         logger.info(f"[步骤{step_number}] 点击L2: '{l2.name}'（L1={l1.name}）坐标={l2.coordinates}")
 
-        # 如果是当前已选中的L2，跳过点击，直接检查阻断
-        if l2.is_selected:
-            logger.info(f"[步骤{step_number}] L2'{l2.name}'已选中，直接检查阻断")
-            l2.is_selected = False  # 只跳过一次
-        else:
-            # 确定性点击L2
-            action = AIDecision(
-                action=ActionType.CLICK,
-                coordinates=l2.coordinates,
-                priority=Priority.HIGH,
-                reasoning=f"测试L2: {l2.name}",
+        # 点击L2（Poco文本匹配 + 坐标兜底，不用element_name避免匹配到错误元素）
+        target_element = UIElement(
+            name="", text=l2.element_text or l2.name, desc="", type="tab",
+            control_type=ControlType.TAB, bounds={}, center=l2.coordinates or (),
+            clickable=True, enabled=True, visible=True,
+        )
+        action = AIDecision(
+            action=ActionType.CLICK,
+            target_element=target_element,
+            coordinates=l2.coordinates,
+            priority=Priority.HIGH,
+            reasoning=f"测试L2: {l2.name}",
+        )
+        action_result = self.action_executor.execute(action)
+        if action_result != "success":
+            logger.warning(f"[步骤{step_number}] L2'{l2.name}'点击失败: {action_result}，重新AI发现L2")
+            self.state = EngineState.DISCOVER_L2
+            return ExplorationStep(
+                step_number=step_number, timestamp=time.time(),
+                screenshot_path="", screen_description=f"L2'{l2.name}'点击失败，重新发现",
+                ui_tree_summary="", action_taken=action, action_result=action_result,
+                screen_fingerprint="",
             )
-            action_result = self.action_executor.execute(action)
-            if action_result != "success":
-                logger.warning(f"[步骤{step_number}] L2'{l2.name}'点击失败: {action_result}")
-                if self.config.use_nav_cache:
-                    logger.warning(f"缓存坐标可能过期，重新AI发现L2")
-                    self.state = EngineState.DISCOVER_L2
-                    return ExplorationStep(
-                        step_number=step_number, timestamp=time.time(),
-                        screenshot_path="", screen_description=f"L2'{l2.name}'点击失败，重新发现",
-                        ui_tree_summary="", action_taken=action, action_result=action_result,
-                        screen_fingerprint="",
-                    )
 
         # 记录已测控件
         self.last_clicked_target = target_name
@@ -373,6 +387,7 @@ class ExplorationEngine:
             self.tested_controls.append(target_name)
 
         self.loading_retry_count = 0
+        self._back_retry_count = 0
         self.state = EngineState.CHECK_BLOCK
 
         return ExplorationStep(
@@ -404,12 +419,11 @@ class ExplorationEngine:
         self.loading_retry_count = 0
         self.state = EngineState.CHECK_L1_BLOCK
 
-        logger.info(f"[步骤{step_number}] L1'{l1.name}'无L2，直接检查阻断状态")
         return self._make_info_step(step_number, "", [],
                                     f"L1'{l1.name}'无L2，准备检查阻断")
 
     def _step_check_block(self, step_number: int) -> ExplorationStep:
-        """检查阻断状态：截图→AI判断→记录结果→前进到下一个L2"""
+        """检查页面状态：截图→AI判断→记录结果→前进到下一个L2"""
         # 等待页面加载
         time.sleep(self.config.exploration.screenshot_delay)
 
@@ -417,48 +431,52 @@ class ExplorationEngine:
         if not screenshot_path:
             return self._make_error_step(step_number, "", "截图捕获失败")
 
-        logger.info(f"[步骤{step_number}] AI检查阻断: '{self.last_clicked_target}'...")
-        result = self.ai_client.check_block_status(screenshot_path, ui_tree_text, self.last_clicked_target)
+        mode = self.config.mode
+        mode_label = "功能检查" if mode == 1 else "阻断检查"
+        logger.info(f"[步骤{step_number}] AI{mode_label}: '{self.last_clicked_target}'...")
+        result = self.ai_client.check_block_status(screenshot_path, ui_tree_text, self.last_clicked_target, mode=mode)
 
         # 弹窗检测
         if result.get("has_popup") and result.get("popup_close_button"):
             self.previous_state = self.state  # CHECK_BLOCK 或 CHECK_BLOCK_LOADING
             self.state = EngineState.HANDLE_POPUP
             btn = result["popup_close_button"]
-            self._pending_popup_coords = tuple(btn.get("coordinates", (0.5, 0.5)))
+            raw_coords = self._normalize_coords(tuple(btn.get("coordinates", (0.5, 0.5))))
+            self._pending_popup_coords = self._refine_popup_coords(raw_coords, elements)
             self._pending_popup_text = btn.get("text", "关闭")
-            logger.info(f"[步骤{step_number}] 阻断检查时发现弹窗，先关闭")
-            return self._make_info_step(step_number, screenshot_path, elements, "发现弹窗，准备关闭")
+            self._pending_popup_type = result.get("popup_type", "other")
+            logger.info(f"[步骤{step_number}] {mode_label}时发现弹窗(类型={self._pending_popup_type})，先处理 坐标={self._pending_popup_coords}")
+            return self._make_info_step(step_number, screenshot_path, elements, "发现弹窗，准备处理")
 
         is_error = result.get("is_error_screen", False)
         is_loading = result.get("is_loading", False)
         desc = result.get("error_description", "") or result.get("screen_description", "")
 
+        if mode == 1:
+            return self._check_block_mode1(step_number, screenshot_path, elements, is_error, is_loading, desc)
+        else:
+            return self._check_block_mode0(step_number, screenshot_path, elements, is_error, is_loading, desc)
+
+    def _check_block_mode0(self, step_number, screenshot_path, elements, is_error, is_loading, desc):
+        """mode=0 阻断模式：is_error=阻断成功, 正常加载=阻断失败→终止"""
         if is_error:
             # ★ 阻断成功
             logger.info(f"[步骤{step_number}] ✓ 阻断成功: '{self.last_clicked_target}' → {desc}")
             self.loading_retry_count = 0
             self._record_block_result(step_number, "block_success", desc, screenshot_path)
             self._update_current_menu_item("block_success", desc, screenshot_path)
-            # 前进到下一个L2
             if not self.menu_structure.advance_l2():
                 self._advance_to_next_l1()
             else:
                 self.state = EngineState.TEST_L2
             return ExplorationStep(
-                step_number=step_number,
-                timestamp=time.time(),
+                step_number=step_number, timestamp=time.time(),
                 screenshot_path=screenshot_path,
                 screen_description=f"[阻断成功] {self.last_clicked_target}",
                 ui_tree_summary=f"{len(elements)}个元素",
-                action_taken=AIDecision(
-                    action=ActionType.WAIT, priority=Priority.HIGH,
-                    reasoning="阻断成功，继续下一个",
-                ),
-                action_result="block_success",
-                screen_fingerprint="",
+                action_taken=AIDecision(action=ActionType.WAIT, priority=Priority.HIGH, reasoning="阻断成功，继续下一个"),
+                action_result="block_success", screen_fingerprint="",
             )
-
         elif is_loading:
             # ★ 加载中
             self.loading_retry_count += 1
@@ -472,35 +490,24 @@ class ExplorationEngine:
                 else:
                     self.state = EngineState.TEST_L2
                 return ExplorationStep(
-                    step_number=step_number,
-                    timestamp=time.time(),
+                    step_number=step_number, timestamp=time.time(),
                     screenshot_path=screenshot_path,
                     screen_description=f"[阻断成功] {self.last_clicked_target}（持续loading）",
                     ui_tree_summary=f"{len(elements)}个元素",
-                    action_taken=AIDecision(
-                        action=ActionType.WAIT, priority=Priority.HIGH,
-                        reasoning="持续loading=阻断成功",
-                    ),
-                    action_result="block_success",
-                    screen_fingerprint="",
+                    action_taken=AIDecision(action=ActionType.WAIT, priority=Priority.HIGH, reasoning="持续loading=阻断成功"),
+                    action_result="block_success", screen_fingerprint="",
                 )
             else:
                 logger.info(f"[步骤{step_number}] ⏳ 加载中({self.loading_retry_count}/{self.max_loading_retries}): '{self.last_clicked_target}'")
                 self.state = EngineState.CHECK_BLOCK_LOADING
                 return ExplorationStep(
-                    step_number=step_number,
-                    timestamp=time.time(),
+                    step_number=step_number, timestamp=time.time(),
                     screenshot_path=screenshot_path,
                     screen_description=f"[加载中] {self.last_clicked_target}",
                     ui_tree_summary=f"{len(elements)}个元素",
-                    action_taken=AIDecision(
-                        action=ActionType.WAIT, priority=Priority.MEDIUM,
-                        reasoning="页面加载中，等待重试",
-                    ),
-                    action_result="loading",
-                    screen_fingerprint="",
+                    action_taken=AIDecision(action=ActionType.WAIT, priority=Priority.MEDIUM, reasoning="页面加载中，等待重试"),
+                    action_result="loading", screen_fingerprint="",
                 )
-
         else:
             # ★ 阻断失败
             logger.error(f"[步骤{step_number}] ✗ 阻断失败: '{self.last_clicked_target}' → {desc}")
@@ -508,21 +515,86 @@ class ExplorationEngine:
             self._update_current_menu_item("block_failure", desc, screenshot_path)
             self.blocking_failure = True
             return ExplorationStep(
-                step_number=step_number,
-                timestamp=time.time(),
+                step_number=step_number, timestamp=time.time(),
                 screenshot_path=screenshot_path,
                 screen_description=f"[阻断失败] {self.last_clicked_target}",
                 ui_tree_summary=f"{len(elements)}个元素",
-                action_taken=AIDecision(
-                    action=ActionType.WAIT, priority=Priority.CRITICAL,
-                    reasoning="阻断失败: 页面正常加载了数据",
-                ),
-                action_result="block_failure",
-                screen_fingerprint="",
+                action_taken=AIDecision(action=ActionType.WAIT, priority=Priority.CRITICAL, reasoning="阻断失败: 页面正常加载了数据"),
+                action_result="block_failure", screen_fingerprint="",
+            )
+
+    def _check_block_mode1(self, step_number, screenshot_path, elements, is_error, is_loading, desc):
+        """mode=1 功能测试：正常加载=功能正常, is_error=功能异常（记录但不终止）"""
+        if is_error:
+            # ★ 功能异常（记录但继续）
+            logger.warning(f"[步骤{step_number}] ✗ 功能异常: '{self.last_clicked_target}' → {desc}")
+            self.loading_retry_count = 0
+            self._record_block_result(step_number, "function_failure", desc, screenshot_path)
+            self._update_current_menu_item("function_failure", desc, screenshot_path)
+            if not self.menu_structure.advance_l2():
+                self._advance_to_next_l1()
+            else:
+                self.state = EngineState.TEST_L2
+            return ExplorationStep(
+                step_number=step_number, timestamp=time.time(),
+                screenshot_path=screenshot_path,
+                screen_description=f"[功能异常] {self.last_clicked_target}",
+                ui_tree_summary=f"{len(elements)}个元素",
+                action_taken=AIDecision(action=ActionType.WAIT, priority=Priority.HIGH, reasoning="功能异常，记录并继续"),
+                action_result="function_failure", screen_fingerprint="",
+            )
+        elif is_loading:
+            # ★ 加载中
+            self.loading_retry_count += 1
+            if self.loading_retry_count >= self.max_loading_retries:
+                logger.warning(f"[步骤{step_number}] ✗ 功能异常: '{self.last_clicked_target}' → 持续无法加载（重试{self.loading_retry_count}次）")
+                self.loading_retry_count = 0
+                self._record_block_result(step_number, "function_failure", f"持续loading: {desc}", screenshot_path)
+                self._update_current_menu_item("function_failure", f"持续loading: {desc}", screenshot_path)
+                if not self.menu_structure.advance_l2():
+                    self._advance_to_next_l1()
+                else:
+                    self.state = EngineState.TEST_L2
+                return ExplorationStep(
+                    step_number=step_number, timestamp=time.time(),
+                    screenshot_path=screenshot_path,
+                    screen_description=f"[功能异常] {self.last_clicked_target}（持续loading）",
+                    ui_tree_summary=f"{len(elements)}个元素",
+                    action_taken=AIDecision(action=ActionType.WAIT, priority=Priority.HIGH, reasoning="持续loading=功能异常"),
+                    action_result="function_failure", screen_fingerprint="",
+                )
+            else:
+                logger.info(f"[步骤{step_number}] ⏳ 加载中({self.loading_retry_count}/{self.max_loading_retries}): '{self.last_clicked_target}'")
+                self.state = EngineState.CHECK_BLOCK_LOADING
+                return ExplorationStep(
+                    step_number=step_number, timestamp=time.time(),
+                    screenshot_path=screenshot_path,
+                    screen_description=f"[加载中] {self.last_clicked_target}",
+                    ui_tree_summary=f"{len(elements)}个元素",
+                    action_taken=AIDecision(action=ActionType.WAIT, priority=Priority.MEDIUM, reasoning="页面加载中，等待重试"),
+                    action_result="loading", screen_fingerprint="",
+                )
+        else:
+            # ★ 功能正常
+            logger.info(f"[步骤{step_number}] ✓ 功能正常: '{self.last_clicked_target}' → {desc}")
+            self.loading_retry_count = 0
+            self._record_block_result(step_number, "function_success", desc, screenshot_path)
+            self._update_current_menu_item("function_success", desc, screenshot_path)
+            if not self.menu_structure.advance_l2():
+                self._advance_to_next_l1()
+            else:
+                self.state = EngineState.TEST_L2
+            return ExplorationStep(
+                step_number=step_number, timestamp=time.time(),
+                screenshot_path=screenshot_path,
+                screen_description=f"[功能正常] {self.last_clicked_target}",
+                ui_tree_summary=f"{len(elements)}个元素",
+                action_taken=AIDecision(action=ActionType.WAIT, priority=Priority.HIGH, reasoning="功能正常，继续下一个"),
+                action_result="function_success", screen_fingerprint="",
             )
 
     def _step_check_l1_block(self, step_number: int) -> ExplorationStep:
-        """检查L1页面阻断（无L2的情况），完成后切换到下一个L1"""
+        """检查L1页面状态（无L2的情况），完成后切换到下一个L1"""
         # 等待页面加载
         time.sleep(self.config.exploration.screenshot_delay)
 
@@ -530,22 +602,34 @@ class ExplorationEngine:
         if not screenshot_path:
             return self._make_error_step(step_number, "", "截图捕获失败")
 
-        logger.info(f"[步骤{step_number}] AI检查L1阻断: '{self.last_clicked_target}'...")
-        result = self.ai_client.check_block_status(screenshot_path, ui_tree_text, self.last_clicked_target)
+        mode = self.config.mode
+        mode_label = "功能检查" if mode == 1 else "L1阻断检查"
+        logger.info(f"[步骤{step_number}] AI{mode_label}: '{self.last_clicked_target}'...")
+        result = self.ai_client.check_block_status(screenshot_path, ui_tree_text, self.last_clicked_target, mode=mode)
 
         # 弹窗检测
         if result.get("has_popup") and result.get("popup_close_button"):
             self.previous_state = EngineState.CHECK_L1_BLOCK
             self.state = EngineState.HANDLE_POPUP
             btn = result["popup_close_button"]
-            self._pending_popup_coords = tuple(btn.get("coordinates", (0.5, 0.5)))
+            raw_coords = self._normalize_coords(tuple(btn.get("coordinates", (0.5, 0.5))))
+            self._pending_popup_coords = self._refine_popup_coords(raw_coords, elements)
             self._pending_popup_text = btn.get("text", "关闭")
-            return self._make_info_step(step_number, screenshot_path, elements, "发现弹窗，准备关闭")
+            self._pending_popup_type = result.get("popup_type", "other")
+            logger.info(f"[步骤{step_number}] L1阻断检查时发现弹窗，先处理 坐标={self._pending_popup_coords}")
+            return self._make_info_step(step_number, screenshot_path, elements, "发现弹窗，准备处理")
 
         is_error = result.get("is_error_screen", False)
         is_loading = result.get("is_loading", False)
         desc = result.get("error_description", "") or result.get("screen_description", "")
 
+        if mode == 1:
+            return self._check_l1_block_mode1(step_number, screenshot_path, elements, is_error, is_loading, desc)
+        else:
+            return self._check_l1_block_mode0(step_number, screenshot_path, elements, is_error, is_loading, desc)
+
+    def _check_l1_block_mode0(self, step_number, screenshot_path, elements, is_error, is_loading, desc):
+        """mode=0 L1阻断模式"""
         if is_error:
             logger.info(f"[步骤{step_number}] ✓ L1阻断成功: '{self.last_clicked_target}' → {desc}")
             self._record_block_result(step_number, "block_success", desc, screenshot_path)
@@ -585,7 +669,6 @@ class ExplorationEngine:
                 )
             else:
                 logger.info(f"[步骤{step_number}] ⏳ L1加载中({self.loading_retry_count}/{self.max_loading_retries})")
-                # 保持在CHECK_L1_BLOCK状态，下一步重试
                 return ExplorationStep(
                     step_number=step_number, timestamp=time.time(),
                     screenshot_path=screenshot_path,
@@ -612,16 +695,104 @@ class ExplorationEngine:
                 action_result="block_failure", screen_fingerprint="",
             )
 
+    def _check_l1_block_mode1(self, step_number, screenshot_path, elements, is_error, is_loading, desc):
+        """mode=1 L1功能测试"""
+        l1 = self.menu_structure.current_l1()
+        if is_error:
+            logger.warning(f"[步骤{step_number}] ✗ L1功能异常: '{self.last_clicked_target}' → {desc}")
+            self._record_block_result(step_number, "function_failure", desc, screenshot_path)
+            if l1:
+                l1.status = "function_failure"
+                l1.block_result = desc
+                l1.screenshot_path = screenshot_path
+            self._advance_to_next_l1()
+            return ExplorationStep(
+                step_number=step_number, timestamp=time.time(),
+                screenshot_path=screenshot_path,
+                screen_description=f"[L1功能异常] {self.last_clicked_target}",
+                ui_tree_summary=f"{len(elements)}个元素",
+                action_taken=AIDecision(action=ActionType.WAIT, priority=Priority.HIGH, reasoning="L1功能异常，记录并继续"),
+                action_result="function_failure", screen_fingerprint="",
+            )
+        elif is_loading:
+            self.loading_retry_count += 1
+            if self.loading_retry_count >= self.max_loading_retries:
+                logger.warning(f"[步骤{step_number}] ✗ L1功能异常（持续loading）: '{self.last_clicked_target}'")
+                self.loading_retry_count = 0
+                self._record_block_result(step_number, "function_failure", f"持续loading: {desc}", screenshot_path)
+                if l1:
+                    l1.status = "function_failure"
+                    l1.block_result = f"持续loading: {desc}"
+                    l1.screenshot_path = screenshot_path
+                self._advance_to_next_l1()
+                return ExplorationStep(
+                    step_number=step_number, timestamp=time.time(),
+                    screenshot_path=screenshot_path,
+                    screen_description=f"[L1功能异常] {self.last_clicked_target}（持续loading）",
+                    ui_tree_summary=f"{len(elements)}个元素",
+                    action_taken=AIDecision(action=ActionType.WAIT, priority=Priority.HIGH, reasoning="L1持续loading=功能异常"),
+                    action_result="function_failure", screen_fingerprint="",
+                )
+            else:
+                logger.info(f"[步骤{step_number}] ⏳ L1加载中({self.loading_retry_count}/{self.max_loading_retries})")
+                return ExplorationStep(
+                    step_number=step_number, timestamp=time.time(),
+                    screenshot_path=screenshot_path,
+                    screen_description=f"[L1加载中] {self.last_clicked_target}",
+                    ui_tree_summary=f"{len(elements)}个元素",
+                    action_taken=AIDecision(action=ActionType.WAIT, priority=Priority.MEDIUM, reasoning="L1加载中，等待重试"),
+                    action_result="loading", screen_fingerprint="",
+                )
+        else:
+            logger.info(f"[步骤{step_number}] ✓ L1功能正常: '{self.last_clicked_target}' → {desc}")
+            self._record_block_result(step_number, "function_success", desc, screenshot_path)
+            if l1:
+                l1.status = "function_success"
+                l1.block_result = desc
+                l1.screenshot_path = screenshot_path
+            self._advance_to_next_l1()
+            return ExplorationStep(
+                step_number=step_number, timestamp=time.time(),
+                screenshot_path=screenshot_path,
+                screen_description=f"[L1功能正常] {self.last_clicked_target}",
+                ui_tree_summary=f"{len(elements)}个元素",
+                action_taken=AIDecision(action=ActionType.WAIT, priority=Priority.HIGH, reasoning="L1功能正常"),
+                action_result="function_success", screen_fingerprint="",
+            )
+
     def _step_handle_popup(self, step_number: int) -> ExplorationStep:
-        """处理弹窗：点击关闭按钮→保存到缓存→返回之前的状态"""
+        """处理弹窗：登录弹窗可转HANDLE_LOGIN，其他弹窗点关闭→缓存→返回之前状态"""
         if not self._pending_popup_coords:
             self.state = self.previous_state or EngineState.DISCOVER_L1
             return self._make_info_step(step_number, "", [], "无弹窗坐标")
 
+        # 登录弹窗：如果配置了需要登录，则转入登录流程
+        if self._pending_popup_type == "login" and self.config.login_required:
+            logger.info(f"[步骤{step_number}] 检测到登录弹窗，进入自动登录流程")
+            self._login_step = 0
+            self._login_analysis = {}
+            self._login_retries = 0
+            self.state = EngineState.HANDLE_LOGIN
+            # 清除弹窗信息（登录流程会自行处理）
+            self._pending_popup_coords = None
+            self._pending_popup_text = ""
+            self._pending_popup_type = ""
+            return self._make_info_step(step_number, "", [], "登录弹窗，转入自动登录")
+
         logger.info(f"[步骤{step_number}] 关闭弹窗: '{self._pending_popup_text}' 坐标={self._pending_popup_coords}")
+
+        # 构建target_element，让ActionExecutor优先用Poco文本匹配点击（比坐标更准）
+        target_element = None
+        if self._pending_popup_text:
+            target_element = UIElement(
+                name="", text=self._pending_popup_text, desc="", type="button",
+                control_type=ControlType.BUTTON, bounds={}, center=self._pending_popup_coords or (),
+                clickable=True, enabled=True, visible=True,
+            )
 
         action = AIDecision(
             action=ActionType.CLICK,
+            target_element=target_element,
             coordinates=self._pending_popup_coords,
             is_popup=True,
             priority=Priority.HIGH,
@@ -629,16 +800,10 @@ class ExplorationEngine:
         )
         action_result = self.action_executor.execute(action)
 
-        # 点击成功后缓存弹窗按钮信息
-        if action_result == "success" and self.config.use_nav_cache and self.app_package:
-            self.nav_cache.save_popup(
-                self.app_package, self.config.l_class, self._pending_popup_text,
-                self._pending_popup_coords[0], self._pending_popup_coords[1]
-            )
-
         # 清除弹窗信息，回到之前状态
         self._pending_popup_coords = None
         self._pending_popup_text = ""
+        self._pending_popup_type = ""
         self.state = self.previous_state or EngineState.DISCOVER_L1
         self.previous_state = None
 
@@ -655,90 +820,377 @@ class ExplorationEngine:
             screen_fingerprint="",
         )
 
+    def _step_handle_login(self, step_number: int) -> ExplorationStep:
+        """自动登录：AI分析登录界面→按步骤填写凭据→点击登录"""
+        logger.debug(f"[步骤{step_number}] 自动登录: 子步骤={self._login_step}")
+
+        # 子步骤0：AI分析登录界面
+        if self._login_step == 0:
+            screenshot_path, elements, ui_tree_text = self._capture_and_analyze(step_number)
+            if not screenshot_path:
+                return self._login_fail(step_number, "截图失败")
+
+            logger.info(f"[步骤{step_number}] AI分析登录界面...")
+            analysis = self.ai_client.analyze_login_screen(
+                screenshot_path, ui_tree_text, self.config.login_method
+            )
+
+            if not analysis.get("is_login_screen"):
+                # 不是登录界面，可能已经登录成功或弹窗已消失
+                logger.info(f"[步骤{step_number}] 当前不是登录界面，返回之前状态")
+                self.state = self.previous_state or EngineState.DISCOVER_L1
+                self.previous_state = None
+                return self._make_info_step(step_number, screenshot_path, elements, "不是登录界面，跳过")
+
+            self._login_analysis = analysis
+            steps = analysis.get("steps", [])
+            if not steps:
+                # 没有可执行的步骤，尝试关闭或跳过
+                return self._login_close_or_skip(step_number, analysis, screenshot_path, elements)
+
+            self._login_step = 1  # 转入执行步骤
+            return self._make_info_step(step_number, screenshot_path, elements,
+                                        f"登录界面分析完成，{len(steps)}个操作步骤")
+
+        # 子步骤1+：按AI返回的steps顺序执行
+        steps = self._login_analysis.get("steps", [])
+        exec_index = self._login_step - 1  # step1对应steps[0]
+
+        if exec_index >= len(steps):
+            # 所有步骤执行完毕，等待并验证
+            time.sleep(3)  # 等待登录请求完成
+            screenshot_path, elements, ui_tree_text = self._capture_and_analyze(step_number)
+            if not screenshot_path:
+                return self._login_fail(step_number, "登录后截图失败")
+
+            # 再次分析，看是否还在登录界面
+            analysis = self.ai_client.analyze_login_screen(
+                screenshot_path, ui_tree_text, self.config.login_method
+            )
+            if analysis.get("is_login_screen"):
+                self._login_retries += 1
+                if self._login_retries >= self.max_login_retries:
+                    logger.warning(f"[步骤{step_number}] 登录重试{self._login_retries}次仍在登录界面，放弃")
+                    return self._login_fail(step_number, "多次登录尝试失败")
+                logger.warning(f"[步骤{step_number}] 登录后仍在登录界面，重试({self._login_retries}/{self.max_login_retries})")
+                self._login_step = 0  # 重新分析
+                return self._make_info_step(step_number, screenshot_path, elements, "登录后仍在登录界面，重试")
+
+            # 登录成功
+            logger.info(f"[步骤{step_number}] ✓ 登录成功，返回之前状态")
+            self.state = self.previous_state or EngineState.DISCOVER_L1
+            self.previous_state = None
+            self._login_step = 0
+            self._login_analysis = {}
+            return self._make_info_step(step_number, screenshot_path, elements, "登录成功")
+
+        # 执行当前步骤
+        step_info = steps[exec_index]
+        action_type = step_info.get("action", "click")
+        coords = step_info.get("coordinates")
+        text = step_info.get("text", "")
+        target = step_info.get("target", "")
+
+        if action_type == "skip":
+            logger.info(f"[步骤{step_number}] 登录步骤{exec_index+1}跳过: {target}")
+            self._login_step += 1
+            return self._make_info_step(step_number, "", [], f"跳过: {target}")
+
+        if action_type == "input_text":
+            # 填写凭据：根据目标判断填手机号还是密码
+            input_text = text
+            if "手机" in target or "账号" in target or "phone" in target.lower():
+                input_text = self.config.login_phone
+            elif "密码" in target or "password" in target.lower():
+                input_text = self.config.login_password
+
+            if not input_text:
+                logger.warning(f"[步骤{step_number}] 登录步骤{exec_index+1}需要输入但文本为空: {target}")
+                self._login_step += 1
+                return self._make_info_step(step_number, "", [], f"输入为空，跳过: {target}")
+
+            logger.info(f"[步骤{step_number}] 登录步骤{exec_index+1}: 输入'{target}' 坐标={coords}")
+            action = AIDecision(
+                action=ActionType.TEXT_INPUT,
+                coordinates=tuple(coords) if coords else None,
+                text_input=input_text,
+                priority=Priority.HIGH,
+                reasoning=f"登录输入: {target}",
+            )
+            action_result = self.action_executor.execute(action)
+            time.sleep(1)
+
+        elif action_type == "click":
+            logger.info(f"[步骤{step_number}] 登录步骤{exec_index+1}: 点击'{target}' 坐标={coords}")
+            action = AIDecision(
+                action=ActionType.CLICK,
+                coordinates=tuple(coords) if coords else None,
+                priority=Priority.HIGH,
+                reasoning=f"登录点击: {target}",
+            )
+            action_result = self.action_executor.execute(action)
+            time.sleep(1)
+
+        elif action_type == "wait":
+            time.sleep(2)
+            action_result = "success"
+
+        else:
+            logger.warning(f"[步骤{step_number}] 未知登录操作类型: {action_type}")
+            action_result = "failed"
+
+        self._login_step += 1
+        return ExplorationStep(
+            step_number=step_number, timestamp=time.time(),
+            screenshot_path="", screen_description=f"登录步骤{exec_index+1}: {target}",
+            ui_tree_summary="",
+            action_taken=AIDecision(
+                action=ActionType.CLICK, coordinates=tuple(coords) if coords else None,
+                priority=Priority.HIGH, reasoning=f"登录: {target}",
+            ),
+            action_result=action_result, screen_fingerprint="",
+        )
+
+    def _login_fail(self, step_number: int, reason: str) -> ExplorationStep:
+        """登录失败：回退到之前的状态"""
+        logger.warning(f"[步骤{step_number}] 自动登录失败: {reason}")
+        self.state = self.previous_state or EngineState.DISCOVER_L1
+        self.previous_state = None
+        self._login_step = 0
+        self._login_analysis = {}
+        return self._make_info_step(step_number, "", [], f"登录失败: {reason}")
+
+    def _login_close_or_skip(self, step_number, analysis, screenshot_path, elements):
+        """登录界面无可执行步骤时，尝试关闭/游客登录/跳过"""
+        # 优先尝试游客登录按钮
+        guest = analysis.get("guest_button")
+        if guest and guest.get("coordinates"):
+            logger.info(f"[步骤{step_number}] 点击游客登录: {guest.get('text', '游客')}")
+            action = AIDecision(
+                action=ActionType.CLICK,
+                coordinates=tuple(guest["coordinates"]),
+                priority=Priority.HIGH,
+                reasoning="游客登录",
+            )
+            self.action_executor.execute(action)
+            time.sleep(2)
+            self.state = self.previous_state or EngineState.DISCOVER_L1
+            self.previous_state = None
+            self._login_step = 0
+            return self._make_info_step(step_number, screenshot_path, elements, "点击游客登录")
+
+        # 其次关闭登录弹窗
+        close = analysis.get("close_button")
+        if close and close.get("coordinates"):
+            logger.info(f"[步骤{step_number}] 关闭登录弹窗: {close.get('text', 'X')}")
+            action = AIDecision(
+                action=ActionType.CLICK,
+                coordinates=tuple(close["coordinates"]),
+                is_popup=True,
+                priority=Priority.HIGH,
+                reasoning="关闭登录弹窗",
+            )
+            self.action_executor.execute(action)
+            time.sleep(self.config.exploration.action_delay)
+            self.state = self.previous_state or EngineState.DISCOVER_L1
+            self.previous_state = None
+            self._login_step = 0
+            return self._make_info_step(step_number, screenshot_path, elements, "关闭登录弹窗")
+
+        return self._login_fail(step_number, "无可执行的登录步骤")
+
     # ==================== 辅助方法 ====================
 
-    def _dismiss_cached_popups(self, app_package: str):
-        """应用启动后，通过UI树验证弹窗是否存在再逐个点击（非盲点）"""
-        popups = self.nav_cache.load_popups(app_package, self.config.l_class)
-        if not popups:
-            return
+    def _check_l1_and_back_if_needed(self, step_number: int, target_l1: MenuItemInfo) -> Optional[ExplorationStep]:
+        """检查目标L1底部导航是否在当前页面可见，不可见则返回。
 
-        logger.info(f"从缓存消除已知弹窗: {len(popups)}个")
+        场景：上一个L1的最后一个L2跳转了新页面，底部导航栏消失了。
+        """
+        if self._back_retry_count >= self._max_back_retries:
+            logger.warning(f"返回重试{self._back_retry_count}次L1仍不可见，跳过返回直接尝试点击")
+            self._back_retry_count = 0
+            return None
 
-        # 尝试用UI树验证弹窗是否真实存在
         elements = self.ui_analyzer.extract_ui_tree()
-        if not elements:
-            # UI树不可用，回退到按顺序盲点（旧行为）
-            logger.info("  UI树不可用，按顺序盲点所有缓存弹窗")
-            for p in popups:
-                coords = (p["coord_x"], p["coord_y"])
-                text = p["button_text"]
-                logger.info(f"  点击缓存弹窗按钮: '{text}' 坐标={coords}")
-                action = AIDecision(
-                    action=ActionType.CLICK,
-                    coordinates=coords,
-                    is_popup=True,
-                    priority=Priority.HIGH,
-                    reasoning=f"缓存弹窗: {text}",
-                )
-                self.action_executor.execute(action)
-                time.sleep(self.config.exploration.action_delay)
-            logger.info("已知弹窗处理完毕")
-            return
 
-        # 智能模式：逐轮检测UI树，确认弹窗存在后再点击
-        remaining = list(popups)
-        max_rounds = len(popups)
-
-        for round_num in range(max_rounds):
-            if not remaining:
+        # 在UI树中查找目标L1
+        target_found = False
+        for elem in elements:
+            elem_text = (elem.text or "").strip()
+            if elem_text and (elem_text == target_l1.name or elem_text == target_l1.element_text):
+                target_found = True
                 break
 
-            if round_num > 0:
-                # 上一轮点击后重新提取UI树
-                time.sleep(self.config.exploration.action_delay)
-                elements = self.ui_analyzer.extract_ui_tree()
-                if not elements:
+        if target_found:
+            self._back_retry_count = 0
+            return None
+
+        # 目标L1没找到，检查其他L1是否可见
+        other_found = 0
+        for l1 in self.menu_structure.l1_items:
+            if l1.name == target_l1.name:
+                continue
+            for elem in elements:
+                elem_text = (elem.text or "").strip()
+                if elem_text and (elem_text == l1.name or elem_text == l1.element_text):
+                    other_found += 1
                     break
 
-            # 收集当前UI树中所有文本和名称
-            ui_texts = set()
-            for el in elements:
-                if el.text:
-                    ui_texts.add(el.text.strip())
-                if el.name:
-                    ui_texts.add(el.name.strip())
+        if other_found > 0:
+            # 其他L1可见但目标不可见，底部导航栏在，直接点击
+            logger.info(f"[步骤{step_number}] 目标L1'{target_l1.name}'不在UI树中，但其他{other_found}个L1可见，尝试点击")
+            self._back_retry_count = 0
+            return None
 
-            # 在当前UI中找到第一个匹配的弹窗按钮并点击
-            found = False
-            new_remaining = []
-            for p in remaining:
-                text = p["button_text"]
-                coords = (p["coord_x"], p["coord_y"])
+        # 所有L1都找不到 → 页面跳转了，需要返回
+        logger.info(f"[步骤{step_number}] 当前页面找不到任何L1导航项，需要返回")
 
-                if not found and text in ui_texts:
-                    logger.info(f"  点击缓存弹窗按钮: '{text}' 坐标={coords}")
-                    action = AIDecision(
-                        action=ActionType.CLICK,
-                        coordinates=coords,
-                        is_popup=True,
-                        priority=Priority.HIGH,
-                        reasoning=f"缓存弹窗: {text}",
-                    )
-                    self.action_executor.execute(action)
-                    found = True
-                else:
-                    new_remaining.append(p)
+        back_elem = self._find_back_button(elements)
+        if back_elem:
+            logger.info(f"[步骤{step_number}] 点击返回按钮: desc='{back_elem.desc}' "
+                        f"pos=({back_elem.center[0]:.3f},{back_elem.center[1]:.3f})")
+            action = AIDecision(
+                action=ActionType.CLICK,
+                target_element=back_elem,
+                coordinates=back_elem.center,
+                priority=Priority.HIGH,
+                reasoning=f"点击返回按钮，回到底部导航",
+            )
+        else:
+            logger.info(f"[步骤{step_number}] 未找到返回按钮，使用系统返回键")
+            action = AIDecision(
+                action=ActionType.BACK,
+                priority=Priority.HIGH,
+                reasoning=f"系统返回键，回到底部导航",
+            )
 
-            remaining = new_remaining
-            if not found:
-                # 当前UI中没有找到任何缓存弹窗，停止
+        action_result = self.action_executor.execute(action)
+        self._back_retry_count += 1
+        time.sleep(self.config.exploration.action_delay)
+
+        # 保持SWITCH_L1状态，下次循环重新检测
+        return ExplorationStep(
+            step_number=step_number, timestamp=time.time(),
+            screenshot_path="", screen_description=f"返回底部导航(准备切换L1:{target_l1.name})",
+            ui_tree_summary=f"{len(elements)}个元素",
+            action_taken=action, action_result=action_result, screen_fingerprint="",
+        )
+
+    def _check_l2_and_back_if_needed(self, step_number: int, target_l2: MenuItemInfo) -> Optional[ExplorationStep]:
+        """检查目标L2控件是否在当前页面存在，不存在则判断是否需要返回。
+
+        三级判断：
+        1. 目标L2在UI树中找到 → 不需要返回，正常点击
+        2. 目标L2没找到，但其他L2标签可见 → 不需要返回（可能是可滚动tab栏，Poco文本兜底）
+        3. 所有L2标签都找不到 → 页面跳转了，执行返回
+        """
+        if self._back_retry_count >= self._max_back_retries:
+            logger.warning(f"返回重试{self._back_retry_count}次目标L2仍不可见，跳过返回直接尝试点击")
+            self._back_retry_count = 0
+            return None
+
+        elements = self.ui_analyzer.extract_ui_tree()
+
+        # 在UI树中查找目标L2
+        target_found = False
+        for elem in elements:
+            elem_text = (elem.text or "").strip()
+            if elem_text and (elem_text == target_l2.name or elem_text == target_l2.element_text):
+                target_found = True
                 break
 
-        if remaining:
-            skip_names = [p["button_text"] for p in remaining]
-            logger.info(f"  {len(remaining)}个缓存弹窗未在当前UI中发现，跳过: {skip_names}")
-        logger.info("已知弹窗处理完毕")
+        if target_found:
+            # 目标L2存在，不需要返回
+            self._back_retry_count = 0
+            return None
+
+        # 目标L2没找到，检查其他L2标签是否可见
+        l2_list = self.menu_structure.current_l2_list()
+        other_found = 0
+        for l2 in l2_list:
+            if l2.name == target_l2.name:
+                continue
+            for elem in elements:
+                elem_text = (elem.text or "").strip()
+                if elem_text and (elem_text == l2.name or elem_text == l2.element_text):
+                    other_found += 1
+                    break
+
+        if other_found > 0:
+            # 其他L2可见但目标不可见（可能是滚动tab栏），不返回，让Poco文本去找
+            logger.info(f"[步骤{step_number}] 目标L2'{target_l2.name}'不在UI树中，但其他{other_found}个L2可见，尝试Poco文本点击")
+            self._back_retry_count = 0
+            return None
+
+        # 所有L2标签都找不到 → 页面跳转了，需要返回
+        logger.info(f"[步骤{step_number}] 当前页面找不到任何L2标签({[l.name for l in l2_list]})，需要返回L1页面")
+
+        # 优先用UI树中的返回按钮，找不到则用系统返回键
+        back_elem = self._find_back_button(elements)
+        if back_elem:
+            logger.info(f"[步骤{step_number}] 点击返回按钮: desc='{back_elem.desc}' "
+                        f"pos=({back_elem.center[0]:.3f},{back_elem.center[1]:.3f})")
+            action = AIDecision(
+                action=ActionType.CLICK,
+                target_element=back_elem,
+                coordinates=back_elem.center,
+                priority=Priority.HIGH,
+                reasoning=f"点击返回按钮，回到L1页面",
+            )
+        else:
+            logger.info(f"[步骤{step_number}] 未找到返回按钮，使用系统返回键")
+            action = AIDecision(
+                action=ActionType.BACK,
+                priority=Priority.HIGH,
+                reasoning=f"系统返回键，回到L1页面",
+            )
+
+        action_result = self.action_executor.execute(action)
+        self._back_retry_count += 1
+        time.sleep(self.config.exploration.action_delay)
+
+        # 保持TEST_L2状态，下次循环重新检测
+        return ExplorationStep(
+            step_number=step_number, timestamp=time.time(),
+            screenshot_path="", screen_description=f"返回L1页面(准备点击{target_l2.name})",
+            ui_tree_summary=f"{len(elements)}个元素",
+            action_taken=action, action_result=action_result, screen_fingerprint="",
+        )
+
+    def _find_back_button(self, elements: list) -> Optional[UIElement]:
+        """在UI树中搜索顶部左上角的返回按钮。
+
+        匹配条件：
+        - 位于左上角: x < 0.2, y < 0.15
+        - 可点击
+        - desc/text含"返回"/"back"，或无文字的小图标按钮（如 < 箭头）
+        """
+        desc_match = None
+        icon_match = None
+
+        for elem in elements:
+            if not elem.clickable:
+                continue
+            ex, ey = elem.center
+            if ex > 0.2 or ey > 0.15:
+                continue
+
+            desc_lower = (elem.desc or "").strip().lower()
+            text_lower = (elem.text or "").strip().lower()
+
+            # 优先：有明确的"返回"描述
+            if "返回" in desc_lower or "返回" in text_lower or "back" in desc_lower:
+                desc_match = elem
+                break
+
+            # 次选：左上角的小可点击元素（可能是返回图标 < ）
+            if not elem.text and not elem.desc:
+                w = elem.bounds.get("width", 0)
+                h = elem.bounds.get("height", 0)
+                if 0 < w < 0.15 and 0 < h < 0.08 and icon_match is None:
+                    icon_match = elem
+
+        return desc_match or icon_match
 
     def _capture_and_analyze(self, step_number: int):
         """通用：截图 + 提取UI树。返回 (screenshot_path, elements, ui_tree_text)"""
@@ -771,24 +1223,6 @@ class ExplorationEngine:
             "screenshot": screenshot_path,
         })
 
-        # 保存到数据库
-        if self.config.use_nav_cache and self.app_package:
-            # 解析item_name, item_level, parent_name
-            target = self.last_clicked_target
-            if "-" in target:
-                parts = target.split("-", 1)
-                parent_name, item_name = parts[0], parts[1]
-                item_level = 2
-            else:
-                item_name = target
-                parent_name = ""
-                item_level = 1
-            self.nav_cache.save_test_result(
-                self.app_package, self.config.l_class,
-                item_name, item_level, parent_name,
-                result_type, desc, screenshot_path
-            )
-
     def _update_current_menu_item(self, status: str, desc: str, screenshot_path: str):
         """更新当前测试中的菜单项状态"""
         l2 = self.menu_structure.current_l2()
@@ -796,6 +1230,75 @@ class ExplorationEngine:
             l2.status = status
             l2.block_result = desc
             l2.screenshot_path = screenshot_path
+
+    def _normalize_coords(self, coords: tuple) -> tuple:
+        """将坐标归一化到0-1范围。如果AI返回了绝对像素坐标(>1.0)，自动转换。"""
+        if not coords or len(coords) < 2:
+            return coords
+        x, y = coords[0], coords[1]
+        if x > 1.0 or y > 1.0:
+            try:
+                screen_w, screen_h = self.action_executor._get_screen_size()
+                x = x / screen_w
+                y = y / screen_h
+                logger.debug(f"坐标归一化: {coords} → ({x:.4f}, {y:.4f})")
+                return (x, y)
+            except Exception:
+                pass
+        return coords
+
+    def _refine_popup_coords(self, coords: tuple, elements: list) -> tuple:
+        """当AI返回的弹窗关闭按钮坐标可疑时，从UI树中搜索可能的关闭按钮。
+
+        关闭按钮特征：小尺寸、可点击、无文字、位于弹窗右上角区域。
+        典型案例：android.view.View, pos=(0.852, 0.393), size=(0.118, 0.053), touchable=True, 无text/desc
+        """
+        if not coords or len(coords) < 2 or not elements:
+            return coords
+
+        x, y = coords[0], coords[1]
+        # 判断坐标是否可疑：在屏幕中心附近（0.35~0.65），通常是AI猜测的默认值
+        is_suspicious = (0.35 <= x <= 0.65) and (0.35 <= y <= 0.65)
+        if not is_suspicious:
+            return coords
+
+        logger.info(f"弹窗关闭坐标可疑({x:.2f}, {y:.2f})，从UI树搜索关闭按钮...")
+
+        candidates = []
+        for elem in elements:
+            if not elem.clickable:
+                continue
+
+            ex, ey = elem.center
+            if ex == 0 and ey == 0:
+                continue
+
+            w = elem.bounds.get("width", 0)
+            h = elem.bounds.get("height", 0)
+
+            # 关闭按钮特征：小尺寸 + 右侧 + 上半屏 + 无文字或文字为×/X/关闭
+            is_small = (0 < w < 0.18) and (0 < h < 0.12)
+            is_right = ex > 0.65
+            is_upper = 0.05 < ey < 0.65
+            text = (elem.text or "").strip()
+            desc = (elem.desc or "").strip()
+            has_close_indicator = text in ("", "×", "X", "x", "✕", "✖", "关闭") and desc in ("", "关闭", "close", "Close")
+
+            if is_small and is_right and is_upper and has_close_indicator:
+                # 评分：越靠右上角越可能是关闭按钮
+                score = ex + (1 - ey)
+                candidates.append((score, elem))
+
+        if candidates:
+            candidates.sort(key=lambda c: c[0], reverse=True)
+            best = candidates[0][1]
+            logger.info(f"UI树找到关闭按钮候选: pos=({best.center[0]:.3f}, {best.center[1]:.3f}) "
+                        f"size=({best.bounds.get('width', 0):.3f}x{best.bounds.get('height', 0):.3f}) "
+                        f"text='{best.text}' type={best.type}")
+            return best.center
+
+        logger.debug("UI树中未找到关闭按钮候选，使用AI原始坐标")
+        return coords
 
     def _make_info_step(self, step_number, screenshot_path, elements, description):
         """创建信息性步骤（非操作）"""
@@ -823,7 +1326,7 @@ class ExplorationEngine:
         )
 
     def _should_stop(self, step_number: int) -> bool:
-        if self.blocking_failure:
+        if self.blocking_failure and self.config.mode == 0:
             return True
         if self.state == EngineState.COMPLETE:
             return True
@@ -854,7 +1357,7 @@ class ExplorationEngine:
                 if dst not in self.exploration_graph[src]:
                     self.exploration_graph[src].append(dst)
         return ExplorationResult(
-            app_package=package, platform=self.config.app.platform,
+            app_package=package, platform=self.config.device.platform,
             start_time=self.start_time, end_time=time.time(),
             total_steps=len(self.steps),
             unique_screens=total_l1,

@@ -48,17 +48,13 @@ class ExplorationConfig:
 
 
 @dataclass
-class AppConfig:
-    """目标应用配置"""
-    package_name: str = ""           # 应用包名
-    app_name: str = ""               # 应用名称
+class DeviceConfig:
+    """设备连接配置"""
     platform: str = "Android"        # 平台：Android / IOS / Windows
     device_uuid: str = ""            # 设备UUID
     device_uri: str = ""             # 设备URI（iOS远程设备用）
     poco_type: str = ""              # Poco类型
     window_name: str = ""            # 窗口名称（Windows应用用）
-    login_required: bool = False     # 是否需要登录
-    login_credentials: dict = field(default_factory=dict)  # 登录凭据
 
 
 @dataclass
@@ -77,12 +73,23 @@ class Config:
     """主配置类，整合所有子配置。"""
     ai: AIConfig = field(default_factory=AIConfig)
     exploration: ExplorationConfig = field(default_factory=ExplorationConfig)
-    app: AppConfig = field(default_factory=AppConfig)
+    device: DeviceConfig = field(default_factory=DeviceConfig)
     router: RouterConfig = field(default_factory=RouterConfig)
+
+    # 测试目标
+    package_name: str = ""                  # 应用包名
     l_class: str = ""                       # 小类ID（阻断规则索引）
+    mode: int = 0                           # 0=阻断测试, 1=功能测试
+
+    # 登录配置
+    login_required: bool = False            # 是否需要登录（True=遇到登录界面自动登录）
+    login_phone: str = ""                   # 登录手机号
+    login_password: str = ""                # 登录密码（密码登录时用）
+    login_method: str = "password"          # password=密码登录, sms=验证码登录
+
+    # 运行参数
     output_dir: str = r"E:\tmp\explore"    # 输出根目录
     logdir: str = ""                        # 实际日志目录（运行时自动生成，无需手动设置）
-    use_nav_cache: bool = True              # 是否启用导航缓存
 
     def build_router_info(self) -> dict:
         """根据配置构建路由器信息字典"""
@@ -104,14 +111,21 @@ class Config:
             cfg.ai = AIConfig(**data["ai"])
         if "exploration" in data:
             cfg.exploration = ExplorationConfig(**data["exploration"])
-        if "app" in data:
-            cfg.app = AppConfig(**data["app"])
+        if "device" in data:
+            cfg.device = DeviceConfig(**data["device"])
         if "router" in data:
             cfg.router = RouterConfig(**data["router"])
+        cfg.package_name = data.get("package_name", "")
         cfg.l_class = data.get("l_class", "")
+        cfg.mode = data.get("mode", 0)
+        # 登录配置
+        login_data = data.get("login") or {}
+        cfg.login_required = login_data.get("required", False)
+        cfg.login_phone = login_data.get("phone", "")
+        cfg.login_password = login_data.get("password", "")
+        cfg.login_method = login_data.get("method", "password")
         cfg.output_dir = data.get("output_dir", r"E:\tmp\explore")
         cfg.logdir = data.get("logdir", "")
-        cfg.use_nav_cache = data.get("use_nav_cache", True)
         return cfg
 
     @classmethod

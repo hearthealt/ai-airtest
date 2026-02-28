@@ -1,5 +1,27 @@
-# AI探索性阻断测试配置
+# AI探索性测试配置
 # 复制本文件为 config.yaml，填入实际值后使用
+
+# 测试目标（包名 + 小类ID 是一组）
+package_name: "tv.danmaku.bili"
+l_class: "23921"
+
+# 测试模式: 0=阻断测试（下发阻断规则，验证页面是否被阻断）, 1=功能测试（不下发阻断，验证页面是否正常加载）
+mode: 0
+
+# 登录配置（可选，遇到登录界面时自动登录）
+login:
+  required: false                # 是否需要登录
+  phone: ""                      # 登录手机号
+  password: ""                   # 登录密码
+  method: "password"             # password=密码登录, sms=验证码登录
+
+# 设备连接配置
+device:
+  platform: "Android"
+  device_uuid: "your-device-uuid"
+  # device_uri: ""         # iOS远程设备用
+  # poco_type: ""
+  # window_name: ""        # Windows应用用
 
 # AI模型配置
 ai:
@@ -23,16 +45,7 @@ exploration:
   screenshot_delay: 10.0
   similarity_threshold: 0.85
 
-# 目标应用配置
-app:
-  package_name: "tv.danmaku.bili"
-  platform: "Android"
-  device_uuid: "your-device-uuid"
-  # device_uri: ""
-  # poco_type: ""
-  # window_name: ""
-
-# 路由器阻断规则配置
+# 路由器阻断规则配置（仅 mode=0 时使用）
 router:
   router_host: "192.168.254.122"
   router_port: 22
@@ -40,9 +53,6 @@ router:
   router_pwd: "your-password"
   router_enable_pwd: "your-enable-password"
   extend_device: "t1"
-
-# 小类ID（阻断规则索引，必填）
-l_class: "23921"
 
 # 输出目录
 output_dir: "E:\\tmp\\explore"

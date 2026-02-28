@@ -52,6 +52,7 @@ class UIElement:
 
     :param name: 元素标识名称
     :param text: 元素上显示的文字
+    :param desc: 无障碍描述（content-description）
     :param type: 原始控件类型（如 android.widget.Button）
     :param control_type: 归一化后的控件类型
     :param bounds: 边界框 {"x", "y", "width", "height"}（归一化0-1）
@@ -59,12 +60,14 @@ class UIElement:
     :param clickable: 是否可点击
     :param enabled: 是否启用
     :param visible: 是否可见
+    :param selected: 是否选中
     :param poco_path: Poco选择器路径（如有）
     :param attributes: 其他属性
     :param element_id: 用于去重的唯一标识
     """
     name: str
     text: str
+    desc: str
     type: str
     control_type: ControlType
     bounds: Dict[str, float]
@@ -72,6 +75,7 @@ class UIElement:
     clickable: bool
     enabled: bool
     visible: bool
+    selected: bool = False
     poco_path: Optional[str] = None
     attributes: Dict[str, Any] = field(default_factory=dict)
     element_id: str = ""
@@ -221,6 +225,7 @@ class EngineState(Enum):
     CHECK_BLOCK = "check_block"
     CHECK_BLOCK_LOADING = "check_block_loading"
     HANDLE_POPUP = "handle_popup"
+    HANDLE_LOGIN = "handle_login"
     SWITCH_L1 = "switch_l1"
     TEST_L1_DIRECT = "test_l1_direct"
     CHECK_L1_BLOCK = "check_l1_block"

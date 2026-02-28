@@ -75,7 +75,7 @@ def run_exploration(config: Config):
     )
 
     logger = logging.getLogger(__name__)
-    logger.info(f"配置信息: 包名={config.app.package_name}, 平台={config.app.platform}")
+    logger.info(f"配置信息: 包名={config.package_name}, 平台={config.device.platform}, 模式={'功能测试' if config.mode == 1 else '阻断测试'}")
     logger.info(f"日志目录: {config.logdir}")
 
     # 导入DeviceDriver（airtest日志已在文件顶部禁用）
@@ -84,63 +84,83 @@ def run_exploration(config: Config):
     from common import DeviceDriver, PcDeviceDriver
 
     # 连接设备并创建驱动
-    if config.app.platform in ("Android", "IOS"):
+    if config.device.platform in ("Android", "IOS"):
         device_info = {
-            "platform": config.app.platform,
-            "uuid": config.app.device_uuid,
-            "uri": config.app.device_uri,
-            "poco_type": config.app.poco_type,
+            "platform": config.device.platform,
+            "uuid": config.device.device_uuid,
+            "uri": config.device.device_uri,
+            "poco_type": config.device.poco_type,
         }
         dd = DeviceDriver(device_info, config.logdir)
-    elif config.app.platform == "Windows":
+    elif config.device.platform == "Windows":
         dd = PcDeviceDriver()
-        if config.app.window_name:
-            dd.connect_device(config.app.window_name)
+        if config.device.window_name:
+            dd.connect_device(config.device.window_name)
     else:
-        raise ValueError(f"不支持的平台: {config.app.platform}")
+        raise ValueError(f"不支持的平台: {config.device.platform}")
 
-    # 下发阻断规则
+    # 下发阻断规则（仅mode=0）
     dev_router = config.build_router_info()
-    logger.info(f"下发阻断规则: l_class={config.l_class}")
-    dd.rule_handle(dev_router, config.l_class)
+    if config.mode == 0:
+        logger.info(f"下发阻断规则: l_class={config.l_class}")
+        dd.rule_handle(dev_router, config.l_class)
+    else:
+        logger.info(f"功能测试模式(mode=1): 不下发阻断规则")
 
     # 创建AI增强驱动并运行探索
     ai_dd = AIDeviceDriver(dd, config)
     try:
-        result = ai_dd.explore(config.app.package_name)
+        result = ai_dd.explore(config.package_name)
     finally:
-        # 无论成功失败，都取消阻断规则
-        logger.info(f"取消阻断规则: l_class={config.l_class}")
-        try:
-            dd.rule_handle(dev_router, config.l_class, 1)
-        except Exception as e:
-            logger.error(f"取消阻断规则失败: {e}")
+        # 无论成功失败，都取消阻断规则（仅mode=0）
+        if config.mode == 0:
+            logger.info(f"取消阻断规则: l_class={config.l_class}")
+            try:
+                dd.rule_handle(dev_router, config.l_class, 1)
+            except Exception as e:
+                logger.error(f"取消阻断规则失败: {e}")
 
     # 生成报告
     html_path = ai_dd.generate_report(result)
     json_path = ReportGenerator().generate_json(result, config.logdir, config.l_class)
 
     # 打印摘要
-    successes = [i for i in result.issues_found if i["type"] == "block_success"]
-    failures = [i for i in result.issues_found if i["type"] == "block_failure"]
-
     print("\n" + "=" * 60)
-    if failures:
-        f = failures[0]
-        print(f"★ 测试结果: 阻断失败 (BLOCK FAILURE)")
-        print(f"  失败控件:   {f.get('target', '未知')}")
-        print(f"  失败原因:   {f['description']}")
-        print(f"  失败截图:   {f.get('screenshot', '')}")
+    if config.mode == 1:
+        # 功能测试模式
+        successes = [i for i in result.issues_found if i["type"] == "function_success"]
+        failures = [i for i in result.issues_found if i["type"] == "function_failure"]
+        if failures:
+            print(f"★ 测试结果: 功能测试有异常 (FUNCTION FAILURE)")
+        else:
+            print(f"测试结果: 全部功能正常 (ALL FUNCTIONAL)")
+        print(f"  功能正常:   {len(successes)}个控件")
+        for s in successes:
+            print(f"    ✓ {s.get('target', '?')}: {s['description'][:50]}")
+        if failures:
+            print(f"  功能异常:   {len(failures)}个控件")
+            for f in failures:
+                print(f"    ✗ {f.get('target', '?')}: {f['description'][:50]}")
     else:
-        print(f"测试结果: 全部阻断成功 (ALL BLOCKED)")
+        # 阻断测试模式
+        successes = [i for i in result.issues_found if i["type"] == "block_success"]
+        failures = [i for i in result.issues_found if i["type"] == "block_failure"]
+        if failures:
+            f = failures[0]
+            print(f"★ 测试结果: 阻断失败 (BLOCK FAILURE)")
+            print(f"  失败控件:   {f.get('target', '未知')}")
+            print(f"  失败原因:   {f['description']}")
+            print(f"  失败截图:   {f.get('screenshot', '')}")
+        else:
+            print(f"测试结果: 全部阻断成功 (ALL BLOCKED)")
+        print(f"  阻断成功:   {len(successes)}个控件")
+        for s in successes:
+            print(f"    ✓ {s.get('target', '?')}: {s['description'][:50]}")
+        if failures:
+            print(f"  阻断失败:   {len(failures)}个控件")
+            for f in failures:
+                print(f"    ✗ {f.get('target', '?')}: {f['description'][:50]}")
 
-    print(f"  阻断成功:   {len(successes)}个控件")
-    for s in successes:
-        print(f"    ✓ {s.get('target', '?')}: {s['description'][:50]}")
-    if failures:
-        print(f"  阻断失败:   {len(failures)}个控件")
-        for f in failures:
-            print(f"    ✗ {f.get('target', '?')}: {f['description'][:50]}")
     print(f"  总步骤:     {result.total_steps}")
     print(f"  HTML报告:   {html_path}")
     print(f"  JSON报告:   {json_path}")

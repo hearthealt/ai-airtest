@@ -13,6 +13,12 @@ logger = logging.getLogger(__name__)
 class ActionExecutor:
     """操作执行器：将AI决定的操作通过Airtest/Poco在设备上执行。"""
 
+    # 通用控件类名前缀，用name匹配会命中大量无关元素，必须跳过
+    _GENERIC_NAME_PREFIXES = (
+        "android.widget.", "android.view.", "android.webkit.",
+        "androidx.", "android.support.",
+    )
+
     def __init__(self, device_driver, config: ExplorationConfig):
         """
         :param device_driver: DeviceDriver或PcDeviceDriver实例
@@ -20,6 +26,15 @@ class ActionExecutor:
         """
         self.dd = device_driver
         self.config = config
+
+    def _is_generic_name(self, name: str) -> bool:
+        """判断name是否为通用控件类名（不适合用poco(name=xxx)匹配）"""
+        if not name:
+            return True
+        for prefix in self._GENERIC_NAME_PREFIXES:
+            if name.startswith(prefix):
+                return True
+        return False
 
     def execute(self, decision: AIDecision) -> str:
         """
@@ -60,47 +75,66 @@ class ActionExecutor:
             return "error"
 
     def _do_click(self, decision: AIDecision) -> str:
-        """执行点击操作（优先Poco，坐标兜底）"""
+        """执行点击操作（Poco文本→描述→名称→坐标兜底）"""
         poco = getattr(self.dd, 'poco', None)
+        el = decision.target_element
 
         # 策略1：通过Poco文本匹配点击
-        if poco and decision.target_element and decision.target_element.text:
+        if poco and el and el.text:
             try:
-                text = decision.target_element.text
-                elem = poco(text=text)
+                elem = poco(text=el.text)
                 if elem.exists():
                     elem.click()
-                    logger.debug(f"Poco文本点击: '{text}'")
+                    logger.info(f"点击方式=Poco文本 '{el.text}'")
                     return "success"
             except Exception as e:
                 logger.debug(f"Poco文本点击失败: {e}")
 
-        # 策略2：通过Poco名称匹配点击
-        if poco and decision.target_element and decision.target_element.name:
+        # 策略2：通过Poco描述匹配点击
+        if poco and el and getattr(el, 'desc', ''):
             try:
-                name = decision.target_element.name
-                elem = poco(name=name)
+                elem = poco(desc=el.desc)
                 if elem.exists():
                     elem.click()
-                    logger.debug(f"Poco名称点击: '{name}'")
+                    logger.info(f"点击方式=Poco描述 '{el.desc}'")
                     return "success"
+            except Exception as e:
+                logger.debug(f"Poco描述点击失败: {e}")
+
+        # 策略3：通过Poco名称匹配点击（跳过通用控件类名，且要求唯一匹配）
+        if poco and el and el.name and not self._is_generic_name(el.name):
+            try:
+                elems = poco(name=el.name)
+                if elems.exists():
+                    # 如果匹配到多个元素，跳过（不确定该点哪个）
+                    children = elems.offspring() if hasattr(elems, 'offspring') else []
+                    try:
+                        count = len(list(elems))
+                    except Exception:
+                        count = 1
+                    if count > 1:
+                        logger.debug(f"Poco名称 '{el.name}' 匹配到{count}个元素，跳过")
+                    else:
+                        elems.click()
+                        logger.info(f"点击方式=Poco名称 '{el.name}'")
+                        return "success"
             except Exception as e:
                 logger.debug(f"Poco名称点击失败: {e}")
 
-        # 策略3：通过Poco坐标点击
+        # 策略4：通过Poco坐标点击
         coords = decision.coordinates
-        if not coords and decision.target_element:
-            coords = decision.target_element.center
+        if not coords and el:
+            coords = el.center
 
         if coords and poco:
             try:
                 poco.click(coords)
-                logger.debug(f"Poco坐标点击: {coords}")
+                logger.info(f"点击方式=Poco坐标 {coords}")
                 return "success"
             except Exception as e:
                 logger.debug(f"Poco坐标点击失败: {e}")
 
-        # 策略4：通过Airtest绝对坐标点击（最终兜底）
+        # 策略5：通过Airtest绝对坐标点击（最终兜底）
         if coords:
             try:
                 screen_w, screen_h = self._get_screen_size()
@@ -108,7 +142,7 @@ class ActionExecutor:
                 abs_y = int(coords[1] * screen_h)
                 from airtest.core.api import touch
                 touch((abs_x, abs_y))
-                logger.debug(f"Airtest坐标点击: ({abs_x}, {abs_y})")
+                logger.info(f"点击方式=Airtest坐标 ({abs_x}, {abs_y})")
                 return "success"
             except Exception as e:
                 logger.error(f"Airtest坐标点击失败: {e}")

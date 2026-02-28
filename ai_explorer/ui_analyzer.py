@@ -3,7 +3,6 @@
 
 import os
 import hashlib
-import datetime
 import logging
 from typing import List
 
@@ -40,29 +39,23 @@ WIDGET_TYPE_MAP = {
     "SearchField": ControlType.TEXT_FIELD,
 }
 
+# 跳过的系统包名前缀（整个子树不提取）
+SKIP_PACKAGES = [
+    "com.android.systemui",
+]
+
 
 class UIAnalyzer:
     """UI分析器：从设备中提取并结构化UI信息。"""
 
     def __init__(self, device_driver, config: ExplorationConfig, l_class: str = ""):
-        """
-        :param device_driver: DeviceDriver或PcDeviceDriver实例
-        :param config: 探索配置
-        :param l_class: 小类ID（用于截图文件命名）
-        """
         self.dd = device_driver
         self.config = config
         self.l_class = l_class
         self._screenshot_counter = 0
 
     def capture_screenshot(self, logdir: str, label: str = "") -> str:
-        """
-        捕获当前界面截图并返回文件路径。
-
-        :param logdir: 日志输出目录
-        :param label: 截图标签（用于文件命名）
-        :return: 截图文件路径，失败返回空字符串
-        """
+        """捕获当前界面截图并返回文件路径。"""
         self._screenshot_counter += 1
         prefix = self.l_class
         label_part = f"-{label}" if label else ""
@@ -72,7 +65,6 @@ class UIAnalyzer:
             self.dd.driver.snapshot(filepath)
         except Exception as e:
             logger.error(f"截图捕获失败: {e}")
-            # 尝试备用截图方式
             try:
                 from airtest.core.api import snapshot
                 snapshot(filepath)
@@ -82,11 +74,7 @@ class UIAnalyzer:
         return filepath
 
     def extract_ui_tree(self) -> List[UIElement]:
-        """
-        提取Poco UI树并返回扁平化的UIElement列表。
-
-        :return: UI元素列表
-        """
+        """提取Poco UI树并返回扁平化的UIElement列表。"""
         poco = getattr(self.dd, 'poco', None)
         if poco is None:
             logger.warning("Poco不可用，返回空UI树")
@@ -94,37 +82,38 @@ class UIAnalyzer:
 
         elements = []
         try:
-            # 方式一：通过Poco agent的hierarchy.dump()获取完整层级
             hierarchy = poco.agent.hierarchy.dump()
             self._flatten_hierarchy(hierarchy, elements, path="")
         except Exception as e:
             logger.warning(f"UI层级dump失败: {e}")
             try:
-                # 方式二：通过Poco代理API遍历
                 self._traverse_poco_proxy(poco, elements)
             except Exception as e2:
                 logger.error(f"备用UI树提取也失败了: {e2}")
         return elements
 
     def _flatten_hierarchy(self, node: dict, result: list, path: str, depth: int = 0):
-        """
-        递归展开Poco层级dump为扁平化的UIElement列表。
-
-        :param node: 当前节点字典
-        :param result: 结果列表（就地追加）
-        :param path: 当前节点路径
-        :param depth: 当前递归深度
-        """
-        if depth > 10 or len(result) > 80:
-            return
-
+        """递归展开Poco层级dump为扁平化的UIElement列表。"""
         payload = node.get("payload", node)
         name = payload.get("name", "")
+        package = payload.get("package", "")
+
+        # 跳过系统UI层（整个子树）
+        if isinstance(package, bytes):
+            package = package.decode("utf-8", errors="ignore")
+        for skip_pkg in SKIP_PACKAGES:
+            if skip_pkg in name or skip_pkg in package:
+                return
+
         node_type = payload.get("type", "")
         text = payload.get("text", "")
+        desc = payload.get("desc", "")
         visible = payload.get("visible", True)
         enabled = payload.get("enabled", True)
         clickable = payload.get("clickable", False)
+        touchable = payload.get("touchable", False)
+        selected = payload.get("selected", False)
+        checked = payload.get("checked", False)
         pos = payload.get("pos", [0, 0])
         size = payload.get("size", [0, 0])
 
@@ -137,74 +126,73 @@ class UIAnalyzer:
                 self._flatten_hierarchy(child, result, path=current_path, depth=depth + 1)
             return
 
-        # 跳过纯布局容器（无文本且不可点击）
-        if node_type in self.config.skip_element_types and not clickable and not text:
+        # 跳过纯布局容器（无文本、无描述、不可点击）
+        is_container = node_type in self.config.skip_element_types
+        has_content = text or desc or clickable or touchable
+        if is_container and not has_content:
             for child in children:
                 self._flatten_hierarchy(child, result, path=current_path, depth=depth + 1)
             return
 
-        # 构建UIElement对象
+        # 构建UIElement
         control_type = WIDGET_TYPE_MAP.get(node_type, ControlType.UNKNOWN)
         cx = pos[0] if len(pos) >= 2 else 0
         cy = pos[1] if len(pos) >= 2 else 0
         w = size[0] if len(size) >= 2 else 0
         h = size[1] if len(size) >= 2 else 0
 
-        bounds = {
-            "x": cx - w / 2,
-            "y": cy - h / 2,
-            "width": w,
-            "height": h,
-        }
-
-        # 生成唯一元素ID（用于去重）
+        bounds = {"x": cx - w / 2, "y": cy - h / 2, "width": w, "height": h}
         id_str = f"{node_type}|{name}|{text}|{cx:.2f}|{cy:.2f}"
         element_id = hashlib.md5(id_str.encode()).hexdigest()[:8]
 
         elem = UIElement(
             name=name,
             text=text,
+            desc=desc,
             type=node_type,
             control_type=control_type,
             bounds=bounds,
             center=(cx, cy),
-            clickable=clickable,
+            clickable=clickable or touchable,
             enabled=enabled,
             visible=True,
+            selected=selected or checked,
             poco_path=current_path,
             element_id=element_id,
         )
         result.append(elem)
 
-        # 递归处理子节点
+        # 递归子节点
         for child in children:
             self._flatten_hierarchy(child, result, path=current_path, depth=depth + 1)
 
-    def _traverse_poco_proxy(self, poco, result: list, max_items: int = 80):
-        """
-        备用方案：通过Poco代理API遍历UI树。
-
-        :param poco: Poco实例
-        :param result: 结果列表
-        :param max_items: 最大提取元素数
-        """
+    def _traverse_poco_proxy(self, poco, result: list):
+        """备用方案：通过Poco代理API遍历UI树。"""
         try:
             root = poco("*")
-            for i, node in enumerate(root):
-                if i >= max_items:
-                    break
+            for node in root:
                 try:
                     attr = node.attr
                     name = attr("name") or ""
                     text = attr("text") or ""
+                    desc = attr("desc") or ""
                     node_type = attr("type") or ""
                     visible = attr("visible")
                     enabled = attr("enabled")
                     pos = attr("pos") or [0, 0]
                     size = attr("size") or [0, 0]
                     clickable = attr("clickable") if hasattr(attr, "__call__") else False
+                    selected = attr("selected") if hasattr(attr, "__call__") else False
 
                     if not visible:
+                        continue
+                    # 跳过系统UI
+                    skip = False
+                    for skip_pkg in SKIP_PACKAGES:
+                        if skip_pkg in name:
+                            skip = True
+                            break
+                    if skip:
                         continue
 
                     control_type = WIDGET_TYPE_MAP.get(node_type, ControlType.UNKNOWN)
@@ -215,11 +203,12 @@ class UIAnalyzer:
                     element_id = hashlib.md5(id_str.encode()).hexdigest()[:8]
 
                     elem = UIElement(
-                        name=name, text=text, type=node_type,
+                        name=name, text=text, desc=desc, type=node_type,
                         control_type=control_type,
                         bounds={"x": cx - w/2, "y": cy - h/2, "width": w, "height": h},
                         center=(cx, cy),
                         clickable=clickable, enabled=enabled, visible=True,
+                        selected=selected,
                         element_id=element_id,
                     )
                     result.append(elem)
@@ -229,23 +218,36 @@ class UIAnalyzer:
             logger.error(f"Poco代理遍历失败: {e}")
 
     def format_ui_tree_text(self, elements: List[UIElement]) -> str:
-        """
-        将UI元素列表格式化为可读文本，用于AI提示词。
-
-        :param elements: UI元素列表
-        :return: 格式化后的文本
-        """
+        """将UI元素列表格式化为可读文本，用于AI提示词。"""
         if not elements:
             return "(UI树不可用 - 仅分析截图)"
 
         lines = [f"元素总数: {len(elements)}", ""]
         for i, elem in enumerate(elements):
-            clickable_mark = "[可点击]" if elem.clickable else ""
-            text_part = f' text="{elem.text}"' if elem.text else ""
-            lines.append(
-                f"[{i}] {elem.type} name=\"{elem.name}\"{text_part} "
-                f"center=({elem.center[0]:.3f},{elem.center[1]:.3f}) "
-                f"{clickable_mark}"
-            )
+            # 紧凑格式：只输出有内容的字段
+            parts = [f"[{i}]"]
+
+            # 类型（简化：去掉android.widget.前缀）
+            short_type = elem.type.replace("android.widget.", "").replace("android.view.", "")
+            parts.append(short_type)
+
+            if elem.name:
+                parts.append(f'name="{elem.name}"')
+            if elem.text:
+                parts.append(f'text="{elem.text}"')
+            if elem.desc:
+                parts.append(f'desc="{elem.desc}"')
+
+            parts.append(f"pos=({elem.center[0]:.3f},{elem.center[1]:.3f})")
+
+            tags = []
+            if elem.clickable:
+                tags.append("可点击")
+            if elem.selected:
+                tags.append("已选中")
+            if tags:
+                parts.append(f"[{'|'.join(tags)}]")
+
+            lines.append(" ".join(parts))
 
         return "\n".join(lines)
