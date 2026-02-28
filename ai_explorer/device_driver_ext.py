@@ -75,7 +75,7 @@ class AIDeviceDriver:
         """
         output_dir = output_dir or self.config.logdir
         generator = ReportGenerator()
-        return generator.generate_html(result, output_dir, self.config.l_class)
+        return generator.generate_html(result, output_dir, self.config.l_class, self.config.mode)
 
     def ai_click(self, description: str) -> bool:
         """

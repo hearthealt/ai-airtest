@@ -6,6 +6,7 @@ import json
 import os
 import time
 import logging
+from collections import OrderedDict
 from html import escape
 
 from .models import ExplorationResult, ActionType
@@ -16,295 +17,405 @@ logger = logging.getLogger(__name__)
 class ReportGenerator:
     """测试报告生成器：根据探索结果生成HTML和JSON格式的报告。"""
 
-    def generate_html(self, result: ExplorationResult, output_dir: str, l_class: str = "") -> str:
-        """
-        生成自包含的HTML测试报告。
+    def generate_html(self, result: ExplorationResult, output_dir: str,
+                      l_class: str = "", mode: int = 0) -> str:
+        """生成自包含的HTML测试报告。"""
+        # 模式
+        is_func = mode == 1
+        mode_label = "功能测试" if is_func else "阻断测试"
+        ok_type = "function_success" if is_func else "block_success"
+        ng_type = "function_failure" if is_func else "block_failure"
+        ok_text = "功能正常" if is_func else "阻断成功"
+        ng_text = "功能异常" if is_func else "阻断失败"
 
-        :param result: 探索结果对象
-        :param output_dir: 报告输出目录
-        :param l_class: 小类ID（用于文件命名）
-        :return: 生成的HTML文件路径
-        """
-        filename = f"{l_class}.html"
-        html_path = os.path.join(output_dir, filename)
+        # 文件名
+        ts = time.strftime('%Y%m%d_%H%M%S', time.localtime(result.start_time))
+        prefix = f"{l_class}_" if l_class else ""
+        html_path = os.path.join(output_dir, f"{prefix}{mode_label}_{ts}.html")
 
+        # 基础数据
         duration = result.end_time - result.start_time
-        duration_str = f"{int(duration // 60)}分{int(duration % 60)}秒"
-
-        successes = [i for i in result.issues_found if i["type"] == "block_success"]
-        failures = [i for i in result.issues_found if i["type"] == "block_failure"]
+        dur_str = f"{int(duration // 60)}分{int(duration % 60)}秒"
+        successes = [i for i in result.issues_found if i["type"] == ok_type]
+        failures = [i for i in result.issues_found if i["type"] == ng_type]
+        tested = len(successes) + len(failures)
         all_pass = len(failures) == 0 and len(successes) > 0
+        cov = f"{result.coverage_percentage:.0f}%"
+        start_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(result.start_time))
 
-        # 统计点击数（实际点击功能控件的步骤，不含弹窗关闭）
-        click_count = sum(
-            1 for s in result.steps
-            if s.action_taken.action == ActionType.CLICK
-            and s.action_result not in ("error",)
-        )
-
-        # 构建各区块
-        result_cards_html = self._build_result_cards(result)
-        issues_html = self._build_issues_section(failures)
-        steps_html = self._build_steps_table(result)
-
-        # 总体结果横幅
+        # Banner
         if all_pass:
-            banner_cls = "banner-pass"
-            banner_icon = "&#10004;"
-            banner_title = "全部阻断成功"
-            banner_desc = f"已测试 {len(successes)} 个控件，全部阻断生效"
+            b_cls, b_ico = "pass", "&#10004;"
+            b_title = f"全部{ok_text}"
+            b_desc = f"已测试 {tested} 个控件，{'功能均正常' if is_func else '全部阻断生效'}"
         elif failures:
-            banner_cls = "banner-fail"
-            banner_icon = "&#10008;"
-            banner_title = "阻断失败"
-            f = failures[0]
-            banner_desc = f"控件「{escape(f.get('target', '未知'))}」未被阻断，页面正常加载了数据"
+            b_cls, b_ico = "fail", "&#10008;"
+            tgt = escape(failures[0].get("target", "?"))
+            if is_func:
+                b_title = f"发现 {len(failures)} 个功能异常"
+                b_desc = f"「{tgt}」等控件功能异常"
+            else:
+                b_title = "阻断失败"
+                b_desc = f"「{tgt}」未被阻断，页面正常加载了数据"
         else:
-            banner_cls = "banner-neutral"
-            banner_icon = "&#8212;"
-            banner_title = "无测试结果"
-            banner_desc = "未检测到任何阻断控件"
+            b_cls, b_ico = "neutral", "&#8212;"
+            b_title = "无测试结果"
+            b_desc = "未检测到任何测试控件"
 
-        start_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(result.start_time))
+        # 构建区块
+        menu_html = self._build_menu_overview(result, ok_type, ng_type, ok_text, ng_text)
+        issues_html = self._build_failures(failures, ng_text)
+        steps_html = self._build_steps(result)
 
-        html_content = f"""<!DOCTYPE html>
+        # 主题
+        theme = "#8b5cf6" if is_func else "#3b82f6"
+        grad = "linear-gradient(135deg,#7c3aed,#a78bfa)" if is_func else "linear-gradient(135deg,#2563eb,#60a5fa)"
+
+        html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>阻断测试报告 - {escape(result.app_package)}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{mode_label}报告 - {escape(result.app_package)}</title>
 <style>
-:root {{
-    --pass: #10b981; --pass-bg: #ecfdf5; --pass-bd: #a7f3d0;
-    --fail: #ef4444; --fail-bg: #fef2f2; --fail-bd: #fecaca;
-    --warn: #f59e0b; --warn-bg: #fffbeb; --warn-bd: #fde68a;
-    --info: #6366f1; --info-bg: #eef2ff; --info-bd: #c7d2fe;
-    --mute: #6b7280;
-    --bg: #f8fafc; --card: #fff; --bd: #e2e8f0;
-    --t1: #1e293b; --t2: #64748b; --t3: #94a3b8;
-    --r: 12px;
+:root{{
+  --ok:#10b981;--ok-bg:#ecfdf5;--ok-bd:#a7f3d0;
+  --ng:#ef4444;--ng-bg:#fef2f2;--ng-bd:#fecaca;
+  --warn:#f59e0b;--info:#6366f1;--info-bg:#eef2ff;
+  --mute:#9ca3af;--bg:#f3f4f6;--card:#fff;--bd:#e5e7eb;
+  --t1:#111827;--t2:#6b7280;--t3:#9ca3af;
+  --r:12px;--theme:{theme};
+  --sh:0 1px 3px rgba(0,0,0,.05);--sh-md:0 4px 12px rgba(0,0,0,.08);
 }}
-*{{ margin:0; padding:0; box-sizing:border-box; }}
-body{{
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC', sans-serif;
-    background: var(--bg); color: var(--t1); line-height: 1.6;
-}}
-.wrap{{ max-width:1100px; margin:0 auto; padding:28px 24px 64px; }}
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei','PingFang SC',sans-serif;
+  background:var(--bg);color:var(--t1);line-height:1.6;-webkit-font-smoothing:antialiased}}
+.wrap{{max-width:1060px;margin:0 auto;padding:0 20px 60px}}
 
-/* ---- header ---- */
-.hd{{ display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px 24px; margin-bottom:24px; }}
-.hd h1{{ font-size:22px; font-weight:700; }}
-.hd-meta{{ display:flex; gap:18px; flex-wrap:wrap; font-size:13px; color:var(--t2); }}
-.hd-meta b{{ color:var(--t1); font-weight:600; }}
+/* top */
+.top{{background:{grad};padding:32px 0 52px;margin-bottom:-32px}}
+.top-in{{max-width:1060px;margin:0 auto;padding:0 20px}}
+.top h1{{font-size:22px;font-weight:700;color:#fff;display:flex;align-items:center;gap:10px;margin-bottom:10px}}
+.top .tag{{background:rgba(255,255,255,.18);padding:2px 12px;border-radius:20px;font-size:12px;font-weight:500}}
+.meta{{display:flex;flex-wrap:wrap;gap:4px 20px;font-size:13px;color:rgba(255,255,255,.75)}}
+.meta b{{color:#fff;font-weight:600}}
 
-/* ---- banner ---- */
-.banner{{ display:flex; align-items:center; gap:18px; padding:22px 28px; border-radius:var(--r); margin-bottom:24px; }}
-.banner-pass{{ background:linear-gradient(135deg,#ecfdf5,#d1fae5); border:1px solid var(--pass-bd); }}
-.banner-fail{{ background:linear-gradient(135deg,#fef2f2,#fee2e2); border:1px solid var(--fail-bd); }}
-.banner-neutral{{ background:linear-gradient(135deg,#f8fafc,#f1f5f9); border:1px solid var(--bd); }}
-.b-icon{{ width:54px; height:54px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:30px; color:#fff; flex-shrink:0; }}
-.banner-pass .b-icon{{ background:var(--pass); }}
-.banner-fail .b-icon{{ background:var(--fail); }}
-.banner-neutral .b-icon{{ background:var(--mute); }}
-.b-txt h2{{ font-size:20px; font-weight:700; }}
-.banner-pass .b-txt h2{{ color:#065f46; }}
-.banner-fail .b-txt h2{{ color:#991b1b; }}
-.banner-neutral .b-txt h2{{ color:var(--t2); }}
-.b-txt p{{ font-size:14px; color:var(--t2); margin-top:2px; }}
+/* banner */
+.banner{{display:flex;align-items:center;gap:18px;padding:22px 26px;border-radius:var(--r);box-shadow:var(--sh-md);position:relative;z-index:1}}
+.banner.pass{{background:linear-gradient(135deg,#ecfdf5,#d1fae5);border:1px solid var(--ok-bd)}}
+.banner.fail{{background:linear-gradient(135deg,#fef2f2,#fee2e2);border:1px solid var(--ng-bd)}}
+.banner.neutral{{background:var(--card);border:1px solid var(--bd)}}
+.b-i{{width:52px;height:52px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:26px;color:#fff;flex-shrink:0;box-shadow:0 2px 8px rgba(0,0,0,.12)}}
+.pass .b-i{{background:var(--ok)}} .fail .b-i{{background:var(--ng)}} .neutral .b-i{{background:var(--mute)}}
+.b-t h2{{font-size:19px;font-weight:700}}
+.pass .b-t h2{{color:#065f46}} .fail .b-t h2{{color:#991b1b}} .neutral .b-t h2{{color:var(--t2)}}
+.b-t p{{font-size:14px;color:var(--t2);margin-top:2px}}
 
-/* ---- stats ---- */
-.stats{{ display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:28px; }}
-@media(max-width:640px){{ .stats{{ grid-template-columns:repeat(2,1fr); }} }}
-.st{{ background:var(--card); border:1px solid var(--bd); border-radius:var(--r); padding:20px; text-align:center; }}
-.st .v{{ font-size:34px; font-weight:800; line-height:1.1; }}
-.st .l{{ font-size:13px; color:var(--t3); margin-top:6px; font-weight:500; }}
-.st-g .v{{ color:var(--pass); }}
-.st-r .v{{ color:var(--fail); }}
+/* stats */
+.stats{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0 22px}}
+@media(max-width:640px){{.stats{{grid-template-columns:repeat(2,1fr)}}}}
+.st{{background:var(--card);border:1px solid var(--bd);border-radius:var(--r);padding:18px 14px;text-align:center;box-shadow:var(--sh)}}
+.st .v{{font-size:30px;font-weight:800;line-height:1.1}}
+.st .l{{font-size:12px;color:var(--t3);margin-top:5px;font-weight:500}}
+.st-ok .v{{color:var(--ok)}} .st-ng .v{{color:var(--ng)}} .st-th .v{{color:var(--theme)}}
 
-/* ---- section ---- */
-.sec{{ background:var(--card); border:1px solid var(--bd); border-radius:var(--r); padding:24px; margin-bottom:24px; }}
-.sec-t{{ font-size:16px; font-weight:700; margin-bottom:16px; display:flex; align-items:center; gap:8px; }}
-.sec-t .cnt{{ background:#f1f5f9; color:var(--t2); font-size:12px; font-weight:600; padding:2px 10px; border-radius:20px; }}
+/* section */
+.sec{{background:var(--card);border:1px solid var(--bd);border-radius:var(--r);margin-bottom:18px;box-shadow:var(--sh);overflow:hidden}}
+.sec-h{{font-size:16px;font-weight:700;padding:20px 24px 16px;display:flex;align-items:center;gap:8px;border-bottom:1px solid #f3f4f6}}
+.sec-h .n{{background:#f3f4f6;color:var(--t2);font-size:11px;font-weight:600;padding:2px 10px;border-radius:20px}}
+.sec-body{{padding:0 24px 20px}}
 
-/* ---- result cards ---- */
-.rc-list{{ display:flex; flex-direction:column; gap:12px; }}
-.rc{{ display:flex; border-radius:10px; border:1px solid var(--bd); overflow:hidden; transition:box-shadow .15s; }}
-.rc:hover{{ box-shadow:0 4px 12px rgba(0,0,0,.08); }}
-.rc-bar{{ width:50px; display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:22px; color:#fff; }}
-.rc-ok .rc-bar{{ background:var(--pass); }}
-.rc-ng .rc-bar{{ background:var(--fail); }}
-.rc-ok{{ background:var(--pass-bg); }}
-.rc-ng{{ background:var(--fail-bg); }}
-.rc-body{{ flex:1; display:flex; align-items:center; gap:16px; padding:14px 18px; }}
-.rc-thumb{{ width:68px; height:120px; object-fit:cover; border-radius:6px; cursor:pointer; border:1px solid var(--bd); flex-shrink:0; background:#f1f5f9; }}
-.rc-info{{ flex:1; min-width:0; }}
-.rc-name{{ font-size:16px; font-weight:700; margin-bottom:4px; }}
-.rc-ok .rc-name{{ color:#065f46; }}
-.rc-ng .rc-name{{ color:#991b1b; }}
-.rc-desc{{ font-size:13px; color:var(--t2); line-height:1.6; word-break:break-word; }}
-.rc-step{{ font-size:12px; color:var(--t3); margin-top:6px; }}
+/* ---- L1 groups ---- */
+.l1g{{margin-top:18px}}
+.l1g:first-child{{margin-top:0}}
+.l1-hd{{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:#f9fafb;border-radius:10px;margin-bottom:12px}}
+.l1-name{{font-size:15px;font-weight:700;display:flex;align-items:center;gap:8px}}
+.l1-name .dot{{width:8px;height:8px;border-radius:50%;flex-shrink:0}}
+.l1-name .dot-ok{{background:var(--ok)}} .l1-name .dot-ng{{background:var(--ng)}} .l1-name .dot-mix{{background:var(--warn)}}
+.l1-stat{{font-size:12px;color:var(--t2);font-weight:500}}
+.l1-stat b{{font-weight:700}}
+.l1-stat .sok{{color:var(--ok)}} .l1-stat .sng{{color:var(--ng)}}
 
-/* ---- issues (failures only) ---- */
-.issue-card{{ border-left:4px solid var(--fail); padding:14px 18px; margin-bottom:10px; background:var(--fail-bg); border-radius:0 8px 8px 0; display:flex; gap:14px; align-items:flex-start; }}
-.issue-card:last-child{{ margin-bottom:0; }}
-.issue-thumb{{ width:56px; height:100px; object-fit:cover; border-radius:4px; cursor:pointer; border:1px solid var(--fail-bd); flex-shrink:0; }}
-.issue-body{{ flex:1; min-width:0; }}
-.issue-target{{ font-weight:700; color:#991b1b; font-size:15px; }}
-.issue-desc{{ font-size:13px; color:var(--t2); margin-top:4px; line-height:1.6; word-break:break-word; }}
-.issue-meta{{ font-size:12px; color:var(--t3); margin-top:4px; }}
+/* L2 grid */
+.l2g{{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}}
+@media(max-width:480px){{.l2g{{grid-template-columns:repeat(2,1fr)}}}}
+.l2c{{border:1px solid var(--bd);border-radius:10px;overflow:hidden;transition:box-shadow .15s,transform .15s;cursor:default}}
+.l2c:hover{{box-shadow:var(--sh-md);transform:translateY(-2px)}}
+.l2c-ok{{border-color:var(--ok-bd)}} .l2c-ng{{border-color:var(--ng-bd)}}
+.l2-img{{width:100%;height:160px;object-fit:cover;display:block;background:#f3f4f6;cursor:pointer;border-bottom:1px solid var(--bd)}}
+.l2-bot{{padding:10px 12px}}
+.l2-name{{font-size:14px;font-weight:600;display:flex;align-items:center;justify-content:space-between;gap:6px}}
+.l2-badge{{font-size:11px;font-weight:600;padding:1px 8px;border-radius:4px;white-space:nowrap}}
+.l2c-ok .l2-badge{{background:var(--ok-bg);color:var(--ok)}}
+.l2c-ng .l2-badge{{background:var(--ng-bg);color:var(--ng)}}
+.l2-desc{{font-size:12px;color:var(--t2);margin-top:4px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}}
 
-/* ---- steps table ---- */
-.tbl-wrap{{ overflow-x:auto; }}
-.tbl{{ width:100%; border-collapse:separate; border-spacing:0; font-size:13px; }}
-.tbl thead th{{ background:#f8fafc; padding:10px 12px; text-align:left; font-weight:600; color:var(--t2); border-bottom:2px solid var(--bd); white-space:nowrap; position:sticky; top:0; }}
-.tbl tbody td{{ padding:10px 12px; border-bottom:1px solid #f1f5f9; vertical-align:middle; }}
-.tbl tbody tr:hover{{ background:#f8fafc; }}
-.tbl .c-num{{ font-weight:700; color:var(--t3); font-size:12px; text-align:center; width:36px; }}
-.tbl .c-img{{ width:48px; height:85px; object-fit:cover; border-radius:4px; cursor:pointer; border:1px solid var(--bd); background:#f1f5f9; }}
-.tbl .c-desc{{ max-width:300px; word-break:break-word; }}
-.tbl .c-target{{ max-width:160px; word-break:break-word; }}
-.tbl .c-reason{{ max-width:260px; word-break:break-word; color:var(--t3); font-size:12px; }}
-.tbl .c-dur{{ color:var(--t3); white-space:nowrap; }}
+/* ---- failures ---- */
+.fl-card{{display:flex;gap:16px;padding:18px 20px;border-radius:10px;background:var(--ng-bg);border:1px solid var(--ng-bd);margin-top:12px}}
+.fl-card:first-child{{margin-top:0}}
+.fl-img{{width:90px;height:160px;object-fit:cover;border-radius:8px;cursor:pointer;border:1px solid var(--ng-bd);flex-shrink:0;background:#fef2f2}}
+.fl-body{{flex:1;min-width:0}}
+.fl-tgt{{font-size:16px;font-weight:700;color:#991b1b;margin-bottom:4px}}
+.fl-desc{{font-size:13px;color:var(--t2);line-height:1.7;word-break:break-word}}
+.fl-meta{{font-size:12px;color:var(--t3);margin-top:8px;display:flex;gap:12px}}
 
-/* ---- badges ---- */
-.bg{{ display:inline-block; padding:2px 10px; border-radius:20px; font-size:12px; font-weight:600; white-space:nowrap; }}
-.bg-ok{{ background:var(--pass-bg); color:var(--pass); border:1px solid var(--pass-bd); }}
-.bg-bs{{ background:#ecfdf5; color:#059669; border:1px solid #a7f3d0; }}
-.bg-bf{{ background:#fef2f2; color:#dc2626; border:1px solid #fecaca; }}
-.bg-ld{{ background:var(--info-bg); color:var(--info); border:1px solid var(--info-bd); }}
-.bg-fl{{ background:var(--fail-bg); color:var(--fail); border:1px solid var(--fail-bd); }}
-.bg-er{{ background:var(--warn-bg); color:var(--warn); border:1px solid var(--warn-bd); }}
+/* ---- steps ---- */
+.st-toggle{{display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;
+  font-size:16px;font-weight:700;padding:20px 24px 16px;border-bottom:1px solid #f3f4f6}}
+.st-toggle .arr{{display:inline-block;transition:transform .2s;font-size:11px;color:var(--t3)}}
+.st-toggle.on .arr{{transform:rotate(90deg)}}
+.st-body{{display:none;padding:0 24px 16px}} .st-body.on{{display:block}}
+.tbl-w{{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:12px}}
+table.tbl{{width:100%;border-collapse:collapse;font-size:13px}}
+.tbl th{{background:#f9fafb;padding:9px 12px;text-align:left;font-weight:600;color:var(--t2);font-size:11px;
+  text-transform:uppercase;letter-spacing:.4px;border-bottom:2px solid var(--bd);white-space:nowrap;position:sticky;top:0}}
+.tbl td{{padding:9px 12px;border-bottom:1px solid #f3f4f6;vertical-align:middle}}
+.tbl tr:hover{{background:#fafbfc}}
+.tbl .n{{font-weight:700;color:var(--t3);font-size:12px;text-align:center;width:32px}}
+.tbl .img{{width:40px;height:72px;object-fit:cover;border-radius:6px;cursor:pointer;border:1px solid var(--bd);background:#f9fafb}}
+.tbl .desc{{max-width:240px;word-break:break-word}}
+.tbl .tgt{{max-width:140px;word-break:break-word;font-weight:500}}
+.tbl .dur{{color:var(--t3);white-space:nowrap;font-size:12px}}
 
-/* ---- lightbox ---- */
-.lb{{ display:none; position:fixed; inset:0; background:rgba(0,0,0,.78); z-index:9999; align-items:center; justify-content:center; cursor:zoom-out; backdrop-filter:blur(4px); }}
-.lb.on{{ display:flex; }}
-.lb img{{ max-width:92vw; max-height:92vh; border-radius:8px; box-shadow:0 20px 60px rgba(0,0,0,.5); }}
+/* badges */
+.bg{{display:inline-block;padding:2px 9px;border-radius:5px;font-size:11px;font-weight:600;white-space:nowrap}}
+.bg-ok{{background:#f0fdf4;color:#16a34a}} .bg-bs{{background:#ecfdf5;color:#059669}}
+.bg-bf{{background:#fef2f2;color:#dc2626}} .bg-fs{{background:#f0fdf4;color:#16a34a}}
+.bg-ff{{background:#fef2f2;color:#dc2626}} .bg-ld{{background:var(--info-bg);color:var(--info)}}
+.bg-fl{{background:var(--ng-bg);color:var(--ng)}} .bg-er{{background:#fffbeb;color:var(--warn)}}
+.bg-skip{{background:#f3f4f6;color:var(--t3)}}
 
-/* ---- footer ---- */
-.ft{{ text-align:center; font-size:12px; color:var(--t3); margin-top:40px; padding-top:20px; border-top:1px solid var(--bd); }}
+/* lightbox */
+.lb{{display:none;position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:9999;align-items:center;justify-content:center;cursor:zoom-out;backdrop-filter:blur(6px)}}
+.lb.on{{display:flex}}
+.lb img{{max-width:92vw;max-height:92vh;border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.5)}}
+
+/* footer */
+.ft{{text-align:center;font-size:12px;color:var(--t3);margin-top:28px;padding-top:18px;border-top:1px solid var(--bd)}}
+
+/* no-data */
+.empty{{padding:40px 20px;text-align:center;color:var(--t3);font-size:14px}}
 </style>
 </head>
 <body>
+
+<div class="top">
+  <div class="top-in">
+    <h1>{mode_label}报告 <span class="tag">Mode {mode}</span></h1>
+    <div class="meta">
+      <span>应用 <b>{escape(result.app_package)}</b></span>
+      <span>平台 <b>{escape(result.platform)}</b></span>
+      <span>耗时 <b>{dur_str}</b></span>
+      <span>时间 <b>{start_str}</b></span>
+    </div>
+  </div>
+</div>
+
 <div class="wrap">
+  <div class="banner {b_cls}">
+    <div class="b-i">{b_ico}</div>
+    <div class="b-t"><h2>{b_title}</h2><p>{b_desc}</p></div>
+  </div>
 
-    <!-- header -->
-    <div class="hd">
-        <h1>阻断测试报告</h1>
-        <div class="hd-meta">
-            <span>应用 <b>{escape(result.app_package)}</b></span>
-            <span>平台 <b>{escape(result.platform)}</b></span>
-            <span>耗时 <b>{duration_str}</b></span>
-            <span>时间 <b>{start_time_str}</b></span>
-        </div>
-    </div>
+  <div class="stats">
+    <div class="st st-th"><div class="v">{tested}</div><div class="l">已测控件</div></div>
+    <div class="st st-ok"><div class="v">{len(successes)}</div><div class="l">{ok_text}</div></div>
+    <div class="st st-ng"><div class="v">{len(failures)}</div><div class="l">{ng_text}</div></div>
+    <div class="st"><div class="v">{cov}</div><div class="l">覆盖率</div></div>
+  </div>
 
-    <!-- banner -->
-    <div class="banner {banner_cls}">
-        <div class="b-icon">{banner_icon}</div>
-        <div class="b-txt">
-            <h2>{banner_title}</h2>
-            <p>{banner_desc}</p>
-        </div>
-    </div>
+  {menu_html}
+  {issues_html}
+  {steps_html}
 
-    <!-- stats -->
-    <div class="stats">
-        <div class="st">
-            <div class="v">{result.total_steps}</div>
-            <div class="l">总步骤</div>
-        </div>
-        <div class="st">
-            <div class="v">{click_count}</div>
-            <div class="l">点击数</div>
-        </div>
-        <div class="st st-g">
-            <div class="v">{len(successes)}</div>
-            <div class="l">阻断成功</div>
-        </div>
-        <div class="st st-r">
-            <div class="v">{len(failures)}</div>
-            <div class="l">阻断失败</div>
-        </div>
-    </div>
-
-    <!-- 阻断结果 -->
-    {result_cards_html}
-
-    <!-- 发现的问题 -->
-    {issues_html}
-
-    <!-- 步骤明细 -->
-    {steps_html}
-
-    <div class="ft">AI 阻断测试报告 &middot; 由 qwen3-vl-plus 视觉模型驱动 &middot; {time.strftime('%Y-%m-%d %H:%M:%S')}</div>
+  <div class="ft">{mode_label}报告 &middot; AI 视觉模型驱动 &middot; {time.strftime('%Y-%m-%d %H:%M:%S')}</div>
 </div>
 
-<!-- lightbox -->
-<div class="lb" id="lb" onclick="this.classList.remove('on')">
-    <img id="lb-img" src="" alt="">
-</div>
+<div class="lb" id="lb" onclick="this.classList.remove('on')"><img id="lb-img" src="" alt=""></div>
 <script>
-function showImg(s){{ document.getElementById('lb-img').src=s; document.getElementById('lb').classList.add('on'); }}
-document.addEventListener('keydown',function(e){{ if(e.key==='Escape') document.getElementById('lb').classList.remove('on'); }});
+function showImg(s){{document.getElementById('lb-img').src=s;document.getElementById('lb').classList.add('on')}}
+document.addEventListener('keydown',function(e){{if(e.key==='Escape')document.getElementById('lb').classList.remove('on')}});
+document.querySelectorAll('.st-toggle').forEach(function(t){{
+  t.addEventListener('click',function(){{this.classList.toggle('on');this.nextElementSibling.classList.toggle('on')}})
+}});
 </script>
-</body>
-</html>"""
+</body></html>"""
 
         with open(html_path, "w", encoding="utf-8") as f:
-            f.write(html_content)
-
+            f.write(html)
         logger.info(f"HTML报告已生成: {html_path}")
         return html_path
 
-    @staticmethod
-    def generate_json(result: ExplorationResult, output_dir: str, l_class: str = "") -> str:
-        """
-        生成JSON格式的测试摘要报告。
+    # ==================== L1→L2 分组总览 ====================
 
-        :param result: 探索结果对象
-        :param output_dir: 报告输出目录
-        :param l_class: 小类ID（用于文件命名）
-        :return: 生成的JSON文件路径
-        """
-        filename = f"{l_class}.json"
-        json_path = os.path.join(output_dir, filename)
+    def _build_menu_overview(self, result: ExplorationResult,
+                             ok_type: str, ng_type: str,
+                             ok_text: str, ng_text: str) -> str:
+        """按 L1 分组展示测试结果，每个 L1 下以网格展示其 L2"""
+        issues = [i for i in result.issues_found if i["type"] in (ok_type, ng_type)]
+        if not issues:
+            return '<div class="sec"><div class="sec-h">测试结果</div><div class="empty">未检测到任何测试结果</div></div>'
 
-        summary = {
-            "app_package": result.app_package,
-            "platform": result.platform,
-            "duration_seconds": result.end_time - result.start_time,
-            "total_steps": result.total_steps,
-            "unique_screens": result.unique_screens,
-            "total_elements_found": result.total_elements_found,
-            "elements_interacted": result.elements_interacted,
-            "coverage_percentage": result.coverage_percentage,
-            "issues_found": result.issues_found,
-            "exploration_graph": result.exploration_graph,
-            "steps": [
-                {
-                    "step": s.step_number,
-                    "screen": s.screen_description,
-                    "action": s.action_taken.action.value,
-                    "target": (s.action_taken.target_element.text or s.action_taken.target_element.name)
-                              if s.action_taken.target_element else None,
-                    "result": s.action_result,
-                    "duration_ms": s.duration_ms,
-                }
-                for s in result.steps
-            ],
-        }
+        # 按 L1 分组（保留顺序）
+        groups = OrderedDict()
+        for issue in issues:
+            target = issue.get("target", "")
+            parts = target.split("-", 1)
+            l1 = parts[0] or target
+            l2 = parts[1] if len(parts) > 1 else ""
+            if l1 not in groups:
+                groups[l1] = []
+            groups[l1].append({
+                "l2": l2, "ok": issue["type"] == ok_type,
+                "desc": issue.get("description", ""),
+                "screenshot": issue.get("screenshot", ""),
+                "step": issue.get("step", "?"),
+            })
 
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(summary, f, ensure_ascii=False, indent=2)
+        group_htmls = []
+        for l1_name, items in groups.items():
+            ok_cnt = sum(1 for i in items if i["ok"])
+            ng_cnt = len(items) - ok_cnt
+            # 状态点
+            if ng_cnt == 0:
+                dot = "dot-ok"
+            elif ok_cnt == 0:
+                dot = "dot-ng"
+            else:
+                dot = "dot-mix"
 
-        logger.info(f"JSON报告已生成: {json_path}")
-        return json_path
+            stat_parts = []
+            if ok_cnt:
+                stat_parts.append(f'<span class="sok">{ok_cnt} {ok_text}</span>')
+            if ng_cnt:
+                stat_parts.append(f'<span class="sng">{ng_cnt} {ng_text}</span>')
 
-    # ==================== 私有构建方法 ====================
+            # L2 网格卡片
+            cards = []
+            for item in items:
+                cls = "l2c-ok" if item["ok"] else "l2c-ng"
+                badge = ok_text if item["ok"] else ng_text
+                img_src = self._img_src(item["screenshot"])
+                img_tag = (f'<img class="l2-img" src="{img_src}" onclick="showImg(this.src)" alt="截图">'
+                           if img_src else '<div class="l2-img"></div>')
+                desc = escape(self._strip_prefix(item["desc"]))
+                name = escape(item["l2"]) if item["l2"] else escape(l1_name)
+
+                cards.append(f"""<div class="l2c {cls}">
+                  {img_tag}
+                  <div class="l2-bot">
+                    <div class="l2-name"><span>{name}</span><span class="l2-badge">{badge}</span></div>
+                    <div class="l2-desc">{desc}</div>
+                  </div>
+                </div>""")
+
+            group_htmls.append(f"""<div class="l1g">
+              <div class="l1-hd">
+                <div class="l1-name"><span class="dot {dot}"></span>{escape(l1_name)}</div>
+                <div class="l1-stat"><b>{ok_cnt}</b>/<b>{len(items)}</b> 通过 &nbsp; {' &nbsp; '.join(stat_parts)}</div>
+              </div>
+              <div class="l2g">{''.join(cards)}</div>
+            </div>""")
+
+        total = len(issues)
+        return f"""<div class="sec">
+          <div class="sec-h">菜单测试总览 <span class="n">{total} 项</span></div>
+          <div class="sec-body">{''.join(group_htmls)}</div>
+        </div>"""
+
+    # ==================== 失败详情 ====================
+
+    def _build_failures(self, failures: list, ng_text: str) -> str:
+        """失败项大图展示"""
+        if not failures:
+            return ""
+
+        items = []
+        for f in failures:
+            img_src = self._img_src(f.get("screenshot", ""))
+            img_tag = (f'<img class="fl-img" src="{img_src}" onclick="showImg(this.src)" alt="截图">'
+                       if img_src else "")
+            desc = escape(self._strip_prefix(f.get("description", "")))
+            target = escape(f.get("target", "?"))
+
+            items.append(f"""<div class="fl-card">
+              {img_tag}
+              <div class="fl-body">
+                <div class="fl-tgt">{target}</div>
+                <div class="fl-desc">{desc}</div>
+                <div class="fl-meta"><span>步骤 #{f.get('step', '?')}</span></div>
+              </div>
+            </div>""")
+
+        return f"""<div class="sec">
+          <div class="sec-h">{ng_text}详情 <span class="n">{len(failures)}</span></div>
+          <div class="sec-body">{''.join(items)}</div>
+        </div>"""
+
+    # ==================== 步骤明细 ====================
+
+    def _build_steps(self, result: ExplorationResult) -> str:
+        """可折叠步骤表，过滤掉内部噪音步骤"""
+        # 只保留有意义的步骤
+        key_results = {"block_success", "block_failure", "function_success",
+                       "function_failure", "loading", "failed"}
+        key_actions = {ActionType.CLICK, ActionType.TEXT_INPUT, ActionType.BACK}
+
+        rows = []
+        for step in result.steps:
+            a = step.action_taken
+            # 过滤：只保留有截图、有关键结果、或有关键操作的步骤
+            is_key = (step.action_result in key_results
+                      or a.action in key_actions
+                      or step.screenshot_path)
+            if not is_key:
+                continue
+
+            target = ""
+            if a.target_element:
+                target = a.target_element.text or a.target_element.name
+
+            img_src = self._img_src(step.screenshot_path)
+            thumb = (f'<img class="img" src="{img_src}" onclick="showImg(this.src)" alt="">'
+                     if img_src else "")
+
+            badge = self._badge(step.action_result)
+            desc = escape(step.screen_description or "")
+            target_esc = escape(target)
+
+            rows.append(f"""<tr>
+              <td class="n">{step.step_number}</td>
+              <td>{thumb}</td>
+              <td class="desc">{desc}</td>
+              <td>{a.action.value}</td>
+              <td class="tgt">{target_esc}</td>
+              <td>{badge}</td>
+              <td class="dur">{step.duration_ms}ms</td>
+            </tr>""")
+
+        total_shown = len(rows)
+        return f"""<div class="sec" style="padding:0">
+          <div class="st-toggle" role="button">
+            <span class="arr">&#9654;</span> 步骤明细
+            <span class="n" style="margin-left:4px">{total_shown} 步</span>
+          </div>
+          <div class="st-body">
+            <div class="tbl-w">
+            <table class="tbl">
+              <thead><tr>
+                <th>#</th><th>截图</th><th>描述</th><th>操作</th><th>目标</th><th>结果</th><th>耗时</th>
+              </tr></thead>
+              <tbody>{''.join(rows)}</tbody>
+            </table>
+            </div>
+          </div>
+        </div>"""
+
+    # ==================== 工具方法 ====================
 
     @staticmethod
     def _img_src(path: str) -> str:
-        """将截图转为base64 data URL，使报告完全自包含"""
+        """截图转 base64 data URL"""
         if not path or not os.path.exists(path):
             return ""
         try:
@@ -319,135 +430,51 @@ document.addEventListener('keydown',function(e){{ if(e.key==='Escape') document.
 
     @staticmethod
     def _badge(result_str: str) -> str:
-        """为步骤结果生成对应样式的标签"""
         m = {
-            "success": ("成功", "bg-ok"),
-            "block_success": ("阻断成功", "bg-bs"),
-            "block_failure": ("阻断失败", "bg-bf"),
-            "loading": ("加载中", "bg-ld"),
-            "failed": ("失败", "bg-fl"),
-            "error": ("异常", "bg-er"),
+            "success": ("成功", "bg-ok"), "block_success": ("阻断成功", "bg-bs"),
+            "block_failure": ("阻断失败", "bg-bf"), "function_success": ("功能正常", "bg-fs"),
+            "function_failure": ("功能异常", "bg-ff"), "loading": ("加载中", "bg-ld"),
+            "failed": ("失败", "bg-fl"), "error": ("异常", "bg-er"),
         }
-        text, cls = m.get(result_str, (result_str, "bg-ok"))
+        text, cls = m.get(result_str, (result_str, "bg-skip"))
         return f'<span class="bg {cls}">{text}</span>'
 
     @staticmethod
     def _strip_prefix(desc: str) -> str:
-        """去掉阻断描述的前缀"""
-        for prefix in ("阻断成功: ", "阻断失败: ", "阻断成功（持续loading）: "):
+        for prefix in ("阻断成功: ", "阻断失败: ", "阻断成功（持续loading）: ",
+                        "功能正常: ", "功能异常: ", "功能异常（持续loading）: "):
             if desc.startswith(prefix):
                 return desc[len(prefix):]
         return desc
 
-    def _build_result_cards(self, result: ExplorationResult) -> str:
-        """构建阻断测试结果卡片（全部控件，包括成功和失败）"""
-        issues = [i for i in result.issues_found
-                  if i["type"] in ("block_success", "block_failure")]
-        if not issues:
-            return """<div class="sec">
-                <div class="sec-t">阻断测试结果</div>
-                <p style="color:var(--t3)">未检测到任何阻断结果。</p>
-            </div>"""
-
-        cards = []
-        for issue in issues:
-            ok = issue["type"] == "block_success"
-            cls = "rc-ok" if ok else "rc-ng"
-            icon = "&#10004;" if ok else "&#10008;"
-
-            img_src = self._img_src(issue.get("screenshot", ""))
-            thumb = (f'<img class="rc-thumb" src="{img_src}" '
-                     f'onclick="showImg(this.src)" alt="截图">'
-                     if img_src else "")
-
-            desc = escape(self._strip_prefix(issue.get("description", "")))
-            target = escape(issue.get("target", "未知"))
-
-            cards.append(f"""<div class="rc {cls}">
-                <div class="rc-bar">{icon}</div>
-                <div class="rc-body">
-                    {thumb}
-                    <div class="rc-info">
-                        <div class="rc-name">{target}</div>
-                        <div class="rc-desc">{desc}</div>
-                        <div class="rc-step">步骤 #{issue.get('step', '?')}</div>
-                    </div>
-                </div>
-            </div>""")
-
-        return f"""<div class="sec">
-            <div class="sec-t">阻断测试结果 <span class="cnt">{len(issues)} 项</span></div>
-            <div class="rc-list">{''.join(cards)}</div>
-        </div>"""
-
-    def _build_issues_section(self, failures: list) -> str:
-        """构建发现的问题区块（仅展示阻断失败项）"""
-        if not failures:
-            return ""
-
-        items = []
-        for f in failures:
-            img_src = self._img_src(f.get("screenshot", ""))
-            thumb = (f'<img class="issue-thumb" src="{img_src}" '
-                     f'onclick="showImg(this.src)" alt="截图">'
-                     if img_src else "")
-
-            desc = escape(self._strip_prefix(f.get("description", "")))
-            target = escape(f.get("target", "未知"))
-
-            items.append(f"""<div class="issue-card">
-                {thumb}
-                <div class="issue-body">
-                    <div class="issue-target">{target}</div>
-                    <div class="issue-desc">{desc}</div>
-                    <div class="issue-meta">步骤 #{f.get('step', '?')}</div>
-                </div>
-            </div>""")
-
-        return f"""<div class="sec">
-            <div class="sec-t">发现的问题 <span class="cnt">{len(failures)} 项</span></div>
-            {''.join(items)}
-        </div>"""
-
-    def _build_steps_table(self, result: ExplorationResult) -> str:
-        """构建步骤明细表格（文字不截断，用CSS自动换行）"""
-        rows = []
-        for step in result.steps:
-            action = step.action_taken
-            target = ""
-            if action.target_element:
-                target = action.target_element.text or action.target_element.name
-
-            img_src = self._img_src(step.screenshot_path)
-            thumb = (f'<img class="c-img" src="{img_src}" '
-                     f'onclick="showImg(this.src)" alt="步骤{step.step_number}">'
-                     if img_src else '')
-
-            badge = self._badge(step.action_result)
-            desc = escape(step.screen_description or "")
-            target_esc = escape(target)
-            reason = escape(action.reasoning or "")
-
-            rows.append(f"""<tr>
-                <td class="c-num">{step.step_number}</td>
-                <td>{thumb}</td>
-                <td class="c-desc">{desc}</td>
-                <td>{action.action.value}</td>
-                <td class="c-target">{target_esc}</td>
-                <td>{badge}</td>
-                <td class="c-dur">{step.duration_ms}ms</td>
-                <td class="c-reason">{reason}</td>
-            </tr>""")
-
-        return f"""<div class="sec">
-            <div class="sec-t">步骤明细 <span class="cnt">{len(result.steps)} 步</span></div>
-            <div class="tbl-wrap">
-            <table class="tbl">
-                <thead><tr>
-                    <th>#</th><th>截图</th><th>界面描述</th><th>操作</th>
-                    <th>目标</th><th>结果</th><th>耗时</th><th>AI理由</th>
-                </tr></thead>
-                <tbody>{''.join(rows)}</tbody>
-            </table>
-            </div>
-        </div>"""
+    @staticmethod
+    def generate_json(result: ExplorationResult, output_dir: str, l_class: str = "") -> str:
+        """生成JSON测试摘要。"""
+        json_path = os.path.join(output_dir, f"{l_class}.json")
+        summary = {
+            "app_package": result.app_package,
+            "platform": result.platform,
+            "duration_seconds": result.end_time - result.start_time,
+            "total_steps": result.total_steps,
+            "unique_screens": result.unique_screens,
+            "total_elements_found": result.total_elements_found,
+            "elements_interacted": result.elements_interacted,
+            "coverage_percentage": result.coverage_percentage,
+            "issues_found": result.issues_found,
+            "steps": [
+                {
+                    "step": s.step_number,
+                    "screen": s.screen_description,
+                    "action": s.action_taken.action.value,
+                    "target": (s.action_taken.target_element.text or s.action_taken.target_element.name)
+                              if s.action_taken.target_element else None,
+                    "result": s.action_result,
+                    "duration_ms": s.duration_ms,
+                }
+                for s in result.steps
+            ],
+        }
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
+        logger.info(f"JSON报告已生成: {json_path}")
+        return json_path
