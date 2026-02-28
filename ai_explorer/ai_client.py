@@ -11,6 +11,7 @@ import logging
 from openai import OpenAI
 from PIL import Image
 
+from .api_key_helper import ensure_api_key, refresh_if_needed, on_auth_error
 from .config import AIConfig
 from .models import (
     AIResponse, AIDecision, UIElement,
@@ -34,13 +35,30 @@ class AIClient:
 
     def __init__(self, config: AIConfig):
         self.config = config
+
+        api_key = ensure_api_key(config)
+
         self.client = OpenAI(
-            api_key=config.api_key,
+            api_key=api_key,
             base_url=config.api_base_url,
             timeout=config.timeout,
         )
         self._call_count = 0       # API调用次数
         self._total_tokens = 0     # 累计消耗token数
+
+    def _refresh_key_if_needed(self):
+        """iflow API Key 快过期时自动刷新"""
+        new_key = refresh_if_needed(self.config)
+        if new_key:
+            self.client.api_key = new_key
+
+    def _handle_auth_error(self):
+        """AI调用认证失败时重新获取key"""
+        new_key = on_auth_error(self.config)
+        if new_key:
+            self.client.api_key = new_key
+            return True
+        return False
 
     def analyze_screen(
         self,
@@ -80,6 +98,8 @@ class AIClient:
             ]},
         ]
 
+        self._refresh_key_if_needed()
+
         for attempt in range(self.config.max_retries):
             try:
                 call_start = time.time()
@@ -91,6 +111,16 @@ class AIClient:
                 )
                 call_duration = time.time() - call_start
                 self._call_count += 1
+
+                # iflow key失效: status=434, choices=None
+                if not response.choices:
+                    msg = getattr(response, 'msg', '') or ''
+                    logger.warning(f"AI返回无效响应: status={getattr(response, 'status', '?')}, msg={msg}")
+                    if 'apiKey' in msg or 'apikey' in msg.lower():
+                        if self._handle_auth_error():
+                            continue  # key已刷新，立即重试
+                    raise ValueError(f"AI返回空choices: {msg}")
+
                 raw_text = response.choices[0].message.content
                 if response.usage:
                     self._total_tokens += response.usage.total_tokens
@@ -99,7 +129,7 @@ class AIClient:
             except Exception as e:
                 logger.warning(f"AI API调用第{attempt+1}次尝试失败: {e}")
                 if attempt < self.config.max_retries - 1:
-                    time.sleep(2 ** attempt)  # 指数退避重试
+                    time.sleep(2 ** attempt)
                 else:
                     logger.error(f"AI API调用在{self.config.max_retries}次尝试后全部失败")
                     return AIResponse(
@@ -171,6 +201,8 @@ class AIClient:
             ]},
         ]
 
+        self._refresh_key_if_needed()
+
         for attempt in range(self.config.max_retries):
             try:
                 call_start = time.time()
@@ -182,6 +214,16 @@ class AIClient:
                 )
                 call_duration = time.time() - call_start
                 self._call_count += 1
+
+                # iflow key失效: status=434, choices=None
+                if not response.choices:
+                    msg = getattr(response, 'msg', '') or ''
+                    logger.warning(f"AI返回无效响应: status={getattr(response, 'status', '?')}, msg={msg}")
+                    if 'apiKey' in msg or 'apikey' in msg.lower():
+                        if self._handle_auth_error():
+                            continue
+                    raise ValueError(f"AI返回空choices: {msg}")
+
                 raw_text = response.choices[0].message.content
                 if response.usage:
                     self._total_tokens += response.usage.total_tokens

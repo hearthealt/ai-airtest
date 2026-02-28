@@ -19,6 +19,9 @@ class AIConfig:
     image_max_size: int = 1280
     image_quality: int = 70
     max_retries: int = 3
+    # iflow平台自动获取API Key的配置
+    iflow_cookies: dict = field(default_factory=dict)   # iflow平台cookies
+    iflow_name: str = ""                                # iflow平台账号名称
 
 
 @dataclass

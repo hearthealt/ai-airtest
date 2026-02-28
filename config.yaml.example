@@ -26,7 +26,7 @@ device:
 # AI模型配置
 ai:
   api_base_url: "https://apis.iflow.cn/v1"
-  api_key: "your-api-key-here"
+  api_key: ""                          # 留空则自动从iflow平台获取
   model: "qwen3-vl-plus"
   max_tokens: 4096
   temperature: 0.3
@@ -34,6 +34,10 @@ ai:
   image_max_size: 1280
   image_quality: 70
   max_retries: 3
+  # iflow平台自动获取API Key（api_base_url含iflow.cn时生效）
+  iflow_name: "173****0061"            # iflow平台账号名称
+  iflow_cookies:                       # iflow平台登录cookies
+    BXAuth: "your-session-id"
 
 # 探索行为配置
 exploration:
