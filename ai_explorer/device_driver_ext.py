@@ -4,10 +4,13 @@
 import os
 import logging
 
+from .action_executor import ActionExecutor
+from .ai_client import AIClient
 from .config import Config
 from .exploration_engine import ExplorationEngine
 from .report_generator import ReportGenerator
 from .models import ExplorationResult
+from .ui_analyzer import UIAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -89,10 +92,6 @@ class AIDeviceDriver:
             ai_dd.ai_click("登录按钮")
             ai_dd.ai_click("底部的设置标签")
         """
-        from .ai_client import AIClient
-        from .ui_analyzer import UIAnalyzer
-        from .action_executor import ActionExecutor
-
         ui = UIAnalyzer(self.dd, self.config.exploration)
         screenshot = ui.capture_screenshot("ai_click")
         elements = ui.extract_ui_tree()
@@ -124,9 +123,6 @@ class AIDeviceDriver:
             ai_dd.ai_assert("显示了登录错误提示")
             ai_dd.ai_assert("已经进入了首页")
         """
-        from .ai_client import AIClient
-        from .ui_analyzer import UIAnalyzer
-
         ui = UIAnalyzer(self.dd, self.config.exploration)
         screenshot = ui.capture_screenshot("ai_assert")
         elements = ui.extract_ui_tree()

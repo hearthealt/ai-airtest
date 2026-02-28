@@ -419,9 +419,6 @@ class ExplorationEngine:
 
     def _step_check_block(self, step_number: int) -> ExplorationStep:
         """检查页面状态：截图→AI判断→记录结果→前进到下一个L2"""
-        # 等待页面加载
-        time.sleep(self.config.exploration.screenshot_delay)
-
         screenshot_path, elements, ui_tree_text = self._capture_and_analyze(step_number)
         if not screenshot_path:
             return self._make_error_step(step_number, "", "截图捕获失败")
@@ -589,9 +586,6 @@ class ExplorationEngine:
 
     def _step_check_l1_block(self, step_number: int) -> ExplorationStep:
         """检查L1页面状态（无L2的情况），完成后切换到下一个L1"""
-        # 等待页面加载
-        time.sleep(self.config.exploration.screenshot_delay)
-
         screenshot_path, elements, ui_tree_text = self._capture_and_analyze(step_number)
         if not screenshot_path:
             return self._make_error_step(step_number, "", "截图捕获失败")
@@ -774,29 +768,58 @@ class ExplorationEngine:
 
         # 点击前重新检查弹窗是否还存在（弹窗可能已自动消失）
         popup_text = self._pending_popup_text
-        popup_coords = self._pending_popup_coords
-        current_elements = self.ui_analyzer.extract_ui_tree()
         popup_still_exists = False
-        if current_elements:
-            for el in current_elements:
-                # 文本匹配
-                if popup_text and (
-                    popup_text in (el.text or "")
-                    or popup_text in (el.name or "")
-                    or popup_text in (el.desc or "")
-                ):
+
+        poco = getattr(self.dd, 'poco', None)
+
+        # 方式1：用Poco直接查找弹窗按钮文本
+        if poco and popup_text:
+            try:
+                elem = poco(text=popup_text)
+                if elem.exists():
                     popup_still_exists = True
-                    break
-                # 坐标proximity匹配（元素中心距弹窗按钮坐标 < 0.05 视为同一个）
-                if popup_coords and el.center and len(el.center) == 2 and len(popup_coords) == 2:
-                    dx = abs(el.center[0] - popup_coords[0])
-                    dy = abs(el.center[1] - popup_coords[1])
-                    if dx < 0.05 and dy < 0.05:
+                    logger.info(f"  -> 弹窗检查: Poco文本匹配到'{popup_text}'，弹窗仍在")
+                else:
+                    logger.info(f"  -> 弹窗检查: Poco文本未匹配到'{popup_text}'")
+            except Exception as e:
+                logger.info(f"  -> 弹窗检查: Poco文本查找异常: {e}")
+
+        # 方式2：文本像是图标描述（×、X、关闭等），用Poco通过name关键词查找关闭按钮
+        if not popup_still_exists and poco and popup_text in ('×', 'X', 'x', '关闭'):
+            _close_keywords = ('close', 'dismiss', 'cancel', 'shut', 'exit')
+            try:
+                for kw in _close_keywords:
+                    elem = poco(nameMatches=f'.*{kw}.*')
+                    if elem.exists():
                         popup_still_exists = True
+                        logger.info(f"  -> 弹窗检查: Poco name关键词'{kw}'匹配到关闭按钮，弹窗仍在")
                         break
-        if not current_elements:
-            # UI树提取失败，保守地认为弹窗还在
+                if not popup_still_exists:
+                    logger.info(f"  -> 弹窗检查: Poco name关键词均未匹配到关闭按钮")
+            except Exception as e:
+                logger.info(f"  -> 弹窗检查: Poco name查找异常: {e}")
+
+        # 方式3：用UI树文本匹配兜底
+        if not popup_still_exists and popup_text:
+            current_elements = self.ui_analyzer.extract_ui_tree()
+            if current_elements:
+                for el in current_elements:
+                    if (popup_text in (el.text or "")
+                            or popup_text in (el.name or "")
+                            or popup_text in (el.desc or "")):
+                        popup_still_exists = True
+                        logger.info(f"  -> 弹窗检查: UI树匹配到'{popup_text}' (text='{el.text}', name='{el.name}', desc='{el.desc}')")
+                        break
+                if not popup_still_exists:
+                    logger.info(f"  -> 弹窗检查: UI树{len(current_elements)}个元素均未匹配到'{popup_text}'")
+            else:
+                popup_still_exists = True
+                logger.info(f"  -> 弹窗检查: UI树提取失败，保守认为弹窗仍在")
+
+        # 没有文本信息，无法判断，保守地认为弹窗还在
+        if not popup_text:
             popup_still_exists = True
+            logger.info(f"  -> 弹窗检查: 无文本信息，保守认为弹窗仍在")
 
         if not popup_still_exists:
             logger.info(f"[步骤{step_number}] 弹窗已自动消失，跳过点击: '{popup_text}'")
@@ -886,7 +909,6 @@ class ExplorationEngine:
 
         if exec_index >= len(steps):
             # 所有步骤执行完毕，等待并验证
-            time.sleep(3)  # 等待登录请求完成
             screenshot_path, elements, ui_tree_text = self._capture_and_analyze(step_number)
             if not screenshot_path:
                 return self._login_fail(step_number, "登录后截图失败")
@@ -1209,7 +1231,8 @@ class ExplorationEngine:
         return desc_match or icon_match
 
     def _capture_and_analyze(self, step_number: int):
-        """通用：截图 + 提取UI树。返回 (screenshot_path, elements, ui_tree_text)"""
+        """通用：等待页面加载 + 截图 + 提取UI树。返回 (screenshot_path, elements, ui_tree_text)"""
+        time.sleep(self.config.exploration.screenshot_delay)
         screenshot_path = self.ui_analyzer.capture_screenshot(f"step{step_number}")
         if not screenshot_path:
             return "", [], ""
