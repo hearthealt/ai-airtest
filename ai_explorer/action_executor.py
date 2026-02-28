@@ -80,6 +80,7 @@ class ActionExecutor:
                 elem = poco(text=el.text)
                 if elem.exists():
                     elem.click()
+                    logger.info(f"  -> Poco文本匹配点击: text='{el.text}'")
                     return "success"
             except Exception as e:
                 pass
@@ -90,6 +91,7 @@ class ActionExecutor:
                 elem = poco(desc=el.desc)
                 if elem.exists():
                     elem.click()
+                    logger.info(f"  -> Poco描述匹配点击: desc='{el.desc}'")
                     return "success"
             except Exception as e:
                 pass
@@ -109,6 +111,7 @@ class ActionExecutor:
                         pass
                     else:
                         elems.click()
+                        logger.info(f"  -> Poco名称匹配点击: name='{el.name}'")
                         return "success"
             except Exception as e:
                 pass
@@ -121,6 +124,7 @@ class ActionExecutor:
         if coords and poco:
             try:
                 poco.click(coords)
+                logger.info(f"  -> Poco坐标点击: ({coords[0]:.3f}, {coords[1]:.3f})")
                 return "success"
             except Exception as e:
                 pass
@@ -133,6 +137,7 @@ class ActionExecutor:
                 abs_y = int(coords[1] * screen_h)
                 from airtest.core.api import touch
                 touch((abs_x, abs_y))
+                logger.info(f"  -> Airtest坐标点击: ({abs_x}, {abs_y})")
                 return "success"
             except Exception as e:
                 logger.error(f"Airtest坐标点击失败: {e}")

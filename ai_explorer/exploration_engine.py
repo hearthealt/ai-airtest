@@ -772,13 +772,49 @@ class ExplorationEngine:
             self._pending_popup_type = ""
             return self._make_info_step(step_number, "", [], "登录弹窗，转入自动登录")
 
-        logger.info(f"[步骤{step_number}] 关闭弹窗: '{self._pending_popup_text}'")
+        # 点击前重新检查弹窗是否还存在（弹窗可能已自动消失）
+        popup_text = self._pending_popup_text
+        popup_coords = self._pending_popup_coords
+        current_elements = self.ui_analyzer.extract_ui_tree()
+        popup_still_exists = False
+        if current_elements:
+            for el in current_elements:
+                # 文本匹配
+                if popup_text and (
+                    popup_text in (el.text or "")
+                    or popup_text in (el.name or "")
+                    or popup_text in (el.desc or "")
+                ):
+                    popup_still_exists = True
+                    break
+                # 坐标proximity匹配（元素中心距弹窗按钮坐标 < 0.05 视为同一个）
+                if popup_coords and el.center and len(el.center) == 2 and len(popup_coords) == 2:
+                    dx = abs(el.center[0] - popup_coords[0])
+                    dy = abs(el.center[1] - popup_coords[1])
+                    if dx < 0.05 and dy < 0.05:
+                        popup_still_exists = True
+                        break
+        if not current_elements:
+            # UI树提取失败，保守地认为弹窗还在
+            popup_still_exists = True
+
+        if not popup_still_exists:
+            logger.info(f"[步骤{step_number}] 弹窗已自动消失，跳过点击: '{popup_text}'")
+            self._pending_popup_coords = None
+            self._pending_popup_text = ""
+            self._pending_popup_type = ""
+            self.state = self.previous_state or EngineState.DISCOVER_L1
+            self.previous_state = None
+            return self._make_info_step(step_number, "", current_elements,
+                                        f"弹窗'{popup_text}'已自动消失，跳过关闭")
+
+        logger.info(f"[步骤{step_number}] 关闭弹窗: '{popup_text}'")
 
         # 构建target_element，让ActionExecutor优先用Poco文本匹配点击（比坐标更准）
         target_element = None
-        if self._pending_popup_text:
+        if popup_text:
             target_element = UIElement(
-                name="", text=self._pending_popup_text, desc="", type="button",
+                name="", text=popup_text, desc="", type="button",
                 control_type=ControlType.BUTTON, bounds={}, center=self._pending_popup_coords or (),
                 clickable=True, enabled=True, visible=True,
             )
@@ -789,7 +825,7 @@ class ExplorationEngine:
             coordinates=self._pending_popup_coords,
             is_popup=True,
             priority=Priority.HIGH,
-            reasoning=f"关闭弹窗: {self._pending_popup_text}",
+            reasoning=f"关闭弹窗: {popup_text}",
         )
         action_result = self.action_executor.execute(action)
 
@@ -1063,12 +1099,12 @@ class ExplorationEngine:
         )
 
     def _check_l2_and_back_if_needed(self, step_number: int, target_l2: MenuItemInfo) -> Optional[ExplorationStep]:
-        """检查目标L2控件是否在当前页面存在，不存在则判断是否需要返回。
+        """检查是否还在L1的L2标签页面，跳转了新页面则返回。
 
-        三级判断：
-        1. 目标L2在UI树中找到 → 不需要返回，正常点击
-        2. 目标L2没找到，但其他L2标签可见 → 不需要返回（可能是可滚动tab栏，Poco文本兜底）
-        3. 所有L2标签都找不到 → 页面跳转了，执行返回
+        判断逻辑：用L1底部导航 + L2顶部标签联合比对。
+        - 收集页面上所有文本，同时匹配当前L1名称和L2标签名称
+        - L1可见 且 至少2个L2标签可见 → 还在原页面
+        - 否则 → 跳转了新页面，需要返回
         """
         if self._back_retry_count >= self._max_back_retries:
             self._back_retry_count = 0
@@ -1076,38 +1112,38 @@ class ExplorationEngine:
 
         elements = self.ui_analyzer.extract_ui_tree()
 
-        # 在UI树中查找目标L2
-        target_found = False
+        # 收集页面上所有文本
+        page_texts = set()
         for elem in elements:
-            elem_text = (elem.text or "").strip()
-            if elem_text and (elem_text == target_l2.name or elem_text == target_l2.element_text):
-                target_found = True
-                break
+            t = (elem.text or "").strip()
+            if t:
+                page_texts.add(t)
 
-        if target_found:
-            # 目标L2存在，不需要返回
-            self._back_retry_count = 0
-            return None
+        # 检查当前L1是否可见
+        l1 = self.menu_structure.current_l1()
+        l1_visible = False
+        if l1:
+            l1_visible = l1.name in page_texts or (l1.element_text and l1.element_text in page_texts)
 
-        # 目标L2没找到，检查其他L2标签是否可见
+        # 检查有多少个L2标签可见
         l2_list = self.menu_structure.current_l2_list()
-        other_found = 0
+        l2_visible_count = 0
         for l2 in l2_list:
-            if l2.name == target_l2.name:
-                continue
-            for elem in elements:
-                elem_text = (elem.text or "").strip()
-                if elem_text and (elem_text == l2.name or elem_text == l2.element_text):
-                    other_found += 1
-                    break
+            if l2.name in page_texts or (l2.element_text and l2.element_text in page_texts):
+                l2_visible_count += 1
 
-        if other_found > 0:
+        # L1可见 且 至少2个L2标签可见 → 还在原页面
+        if l1_visible and l2_visible_count >= 2:
             self._back_retry_count = 0
             return None
 
-        # 所有L2标签都找不到 → 页面跳转了，需要返回
-        logger.info(f"[步骤{step_number}] 页面跳转，返回L1页面")
+        # 只有1个或0个L2但L1可见，且L2总数本身就<=1 → 也算在原页面
+        if l1_visible and len(l2_list) <= 1:
+            self._back_retry_count = 0
+            return None
 
+        # 判定为跳转了新页面
+        logger.info(f"[步骤{step_number}] 检测到页面跳转（L1可见={l1_visible}, L2可见={l2_visible_count}/{len(l2_list)}），返回L1页面")
         back_elem = self._find_back_button(elements)
         if back_elem:
             action = AIDecision(
@@ -1317,7 +1353,9 @@ class ExplorationEngine:
         # 从MenuStructure计算真实统计
         total_l1 = len(self.menu_structure.l1_items)
         total_l2 = sum(len(v) for v in self.menu_structure.l2_map.values())
-        total_menu_items = total_l1 + total_l2
+        # 有L2的L1不单独计入，只算其L2；无L2的L1才算独立菜单项
+        l1_with_l2 = sum(1 for v in self.menu_structure.l2_map.values() if len(v) > 0)
+        total_menu_items = (total_l1 - l1_with_l2) + total_l2
         tested_count = len(self.tested_controls)
         coverage = (tested_count / total_menu_items * 100) if total_menu_items > 0 else 0
 
