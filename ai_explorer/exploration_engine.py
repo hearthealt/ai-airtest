@@ -67,10 +67,10 @@ class ExplorationEngine:
         self._max_onboarding_steps = 10  # onboarding最多操作次数，防止死循环
 
         # 登录处理
-        self._login_step: int = 0  # 登录子步骤
-        self._login_analysis: dict = {}  # AI返回的登录分析结果
+        self._login_actions_done: list = []  # 已完成的登录操作描述列表
         self._login_retries: int = 0
         self.max_login_retries: int = 3
+        self._max_login_steps: int = 15
 
         # 返回导航（L2跳转新页面后需返回）
         self._back_retry_count: int = 0
@@ -236,7 +236,7 @@ class ExplorationEngine:
                 logger.error(f"回放步骤{step_number}异常: {e}")
                 # 降级：从当前位置切换到录制模式
                 logger.warning(f"回放异常，从步骤{step_number}开始降级为AI模式")
-                self._fallback_to_record(app_package, step_number)
+                self._fallback_to_record(step_number)
                 break
 
         if self.config.mode == 1:
@@ -319,7 +319,19 @@ class ExplorationEngine:
             self.state = EngineState.COMPLETE
             return self._make_info_step(step_number, screenshot_path, elements, "未发现L1菜单，测试完成")
 
-        # 第一个L1通常已选中，直接进入发现L2
+        # 确保从第一个L1开始：如果第一个L1未选中，先点击它
+        first_l1 = l1_items[0]
+        if not first_l1.is_selected and first_l1.coordinates and first_l1.coordinates != (0, 0):
+            logger.info(f"[步骤{step_number}] 当前不在第一个L1'{first_l1.name}'，先点击切换")
+            action = AIDecision(
+                action=ActionType.CLICK,
+                coordinates=first_l1.coordinates,
+                priority=Priority.HIGH,
+                reasoning=f"切换到第一个L1: {first_l1.name}",
+            )
+            self.action_executor.execute(action)
+            time.sleep(self.config.exploration.action_delay)
+
         self.state = EngineState.DISCOVER_L2
         return self._make_info_step(step_number, screenshot_path, elements,
                                     f"发现L1菜单: {l1_names}")
@@ -878,8 +890,7 @@ class ExplorationEngine:
         # 登录弹窗：如果配置了需要登录，则转入登录流程
         if self._pending_popup_type == "login" and self.config.login_required:
             logger.info(f"[步骤{step_number}] 检测到登录弹窗，进入自动登录流程")
-            self._login_step = 0
-            self._login_analysis = {}
+            self._login_actions_done = []
             self._login_retries = 0
             self.state = EngineState.HANDLE_LOGIN
             # 清除弹窗信息（登录流程会自行处理）
@@ -1031,109 +1042,89 @@ class ExplorationEngine:
         )
 
     def _step_handle_login(self, step_number: int) -> ExplorationStep:
-        """自动登录：AI分析登录界面→按步骤填写凭据→点击登录"""
+        """自动登录：每次截图→AI分析下一步→执行→循环直到完成"""
 
-        # 子步骤0：AI分析登录界面
-        if self._login_step == 0:
-            screenshot_path, elements, ui_tree_text = self._capture_and_analyze(step_number)
-            if not screenshot_path:
-                return self._login_fail(step_number, "截图失败")
+        # 超出最大步骤限制
+        if len(self._login_actions_done) >= self._max_login_steps:
+            return self._login_fail(step_number, f"登录步骤超过{self._max_login_steps}步上限")
 
-            logger.info(f"[步骤{step_number}] AI分析登录界面...")
-            analysis = self.ai_client.analyze_login_screen(
-                screenshot_path, ui_tree_text, self.config.login_method
-            )
+        screenshot_path, elements, ui_tree_text = self._capture_and_analyze(step_number)
+        if not screenshot_path:
+            return self._login_fail(step_number, "截图失败")
 
-            if not analysis.get("is_login_screen"):
-                # 不是登录界面，可能已经登录成功或弹窗已消失
-                logger.info(f"[步骤{step_number}] 当前不是登录界面，返回之前状态")
-                self.state = self.previous_state or EngineState.DISCOVER_L1
-                self.previous_state = None
-                return self._make_info_step(step_number, screenshot_path, elements, "不是登录界面，跳过")
+        # 构建已完成操作的上下文
+        actions_done_text = "\n".join(
+            f"  {i+1}. {a}" for i, a in enumerate(self._login_actions_done)
+        ) if self._login_actions_done else "  (暂无，这是第一步)"
 
-            self._login_analysis = analysis
-            steps = analysis.get("steps", [])
-            if not steps:
-                # 没有可执行的步骤，尝试关闭或跳过
-                return self._login_close_or_skip(step_number, analysis, screenshot_path, elements)
+        logger.info(f"[步骤{step_number}] AI分析登录界面(已完成{len(self._login_actions_done)}步)...")
+        analysis = self.ai_client.analyze_login_screen(
+            screenshot_path, ui_tree_text, self.config.login_method, actions_done_text
+        )
 
-            self._login_step = 1  # 转入执行步骤
-            return self._make_info_step(step_number, screenshot_path, elements,
-                                        f"登录界面分析完成，{len(steps)}个操作步骤")
-
-        # 子步骤1+：按AI返回的steps顺序执行
-        steps = self._login_analysis.get("steps", [])
-        exec_index = self._login_step - 1  # step1对应steps[0]
-
-        if exec_index >= len(steps):
-            # 所有步骤执行完毕，等待并验证
-            screenshot_path, elements, ui_tree_text = self._capture_and_analyze(step_number)
-            if not screenshot_path:
-                return self._login_fail(step_number, "登录后截图失败")
-
-            # 再次分析，看是否还在登录界面
-            analysis = self.ai_client.analyze_login_screen(
-                screenshot_path, ui_tree_text, self.config.login_method
-            )
-            if analysis.get("is_login_screen"):
-                self._login_retries += 1
-                if self._login_retries >= self.max_login_retries:
-                    logger.warning(f"[步骤{step_number}] 登录重试{self._login_retries}次仍在登录界面，放弃")
-                    return self._login_fail(step_number, "多次登录尝试失败")
-                logger.warning(f"[步骤{step_number}] 登录后仍在登录界面，重试({self._login_retries}/{self.max_login_retries})")
-                self._login_step = 0  # 重新分析
-                return self._make_info_step(step_number, screenshot_path, elements, "登录后仍在登录界面，重试")
-
-            # 登录成功
-            logger.info(f"[步骤{step_number}] ✓ 登录成功，返回之前状态")
+        # 不是登录界面 → 登录成功或已离开
+        if not analysis.get("is_login_screen"):
+            logger.info(f"[步骤{step_number}] 已不在登录界面，登录流程完成")
             self.state = self.previous_state or EngineState.DISCOVER_L1
             self.previous_state = None
-            self._login_step = 0
-            self._login_analysis = {}
+            self._login_actions_done = []
             return self._make_info_step(step_number, screenshot_path, elements, "登录成功")
 
-        # 执行当前步骤
-        step_info = steps[exec_index]
-        action_type = step_info.get("action", "click")
-        coords = step_info.get("coordinates")
-        text = step_info.get("text", "")
-        target = step_info.get("target", "")
+        next_action = analysis.get("next_action")
+        if not next_action:
+            return self._login_fail(step_number, "AI未返回操作步骤")
 
-        if action_type == "skip":
-            logger.info(f"[步骤{step_number}] 登录步骤{exec_index+1}跳过: {target}")
-            self._login_step += 1
-            return self._make_info_step(step_number, "", [], f"跳过: {target}")
+        action_type = next_action.get("action", "click")
+        coords = next_action.get("coordinates")
+        target = next_action.get("target", "")
+        reasoning = next_action.get("reasoning", "")
 
+        # done = AI认为登录操作已完成（如已点击登录按钮），等待验证
+        if action_type == "done":
+            self._login_retries += 1
+            if self._login_retries >= self.max_login_retries:
+                return self._login_fail(step_number, "多次验证后仍在登录界面")
+            logger.info(f"[步骤{step_number}] AI认为登录完成，等待验证...")
+            self._login_actions_done.append(f"等待登录验证({self._login_retries}/{self.max_login_retries})")
+            time.sleep(self.config.exploration.action_delay * 2)
+            return self._make_info_step(step_number, screenshot_path, elements,
+                                        f"登录操作完成，等待验证({self._login_retries}/{self.max_login_retries})")
+
+        # 执行操作
         if action_type == "input_text":
-            # 填写凭据：根据目标判断填手机号还是密码
-            input_text = text
+            # 根据target描述判断填什么
             if "手机" in target or "账号" in target or "phone" in target.lower():
                 input_text = self.config.login_phone
+                desc = "输入手机号"
             elif "密码" in target or "password" in target.lower():
                 input_text = self.config.login_password
+                desc = "输入密码"
+            elif "验证码" in target:
+                input_text = ""
+                desc = "输入验证码"
+            else:
+                input_text = ""
+                desc = f"输入: {target}"
 
             if not input_text:
-                logger.warning(f"[步骤{step_number}] 登录步骤{exec_index+1}需要输入但文本为空: {target}")
-                self._login_step += 1
-                return self._make_info_step(step_number, "", [], f"输入为空，跳过: {target}")
+                self._login_actions_done.append(f"跳过{desc}(无内容)")
+                return self._make_info_step(step_number, screenshot_path, elements, f"跳过{desc}")
 
-            logger.info(f"[步骤{step_number}] 登录步骤{exec_index+1}: 输入'{target}'")
-            # 优先用Poco找输入框
             refined_coords = self._login_find_element(target, coords)
+            logger.info(f"[步骤{step_number}] 登录: {desc}")
             action = AIDecision(
                 action=ActionType.TEXT_INPUT,
                 coordinates=refined_coords,
                 text_input=input_text,
                 priority=Priority.HIGH,
-                reasoning=f"登录输入: {target}",
+                reasoning=f"登录{desc}",
             )
-            action_result = self.action_executor.execute(action)
-            time.sleep(1)
+            self.action_executor.execute(action)
+            self._login_actions_done.append(f"{desc} → ({refined_coords[0]:.2f}, {refined_coords[1]:.2f})")
 
         elif action_type == "click":
-            logger.info(f"[步骤{step_number}] 登录步骤{exec_index+1}: 点击'{target}'")
-            # 优先用Poco找按钮
             refined_coords = self._login_find_element(target, coords)
+            logger.info(f"[步骤{step_number}] 登录: 点击'{target}'")
             target_element = UIElement(
                 name="", text=target, desc="", type="button",
                 control_type=ControlType.BUTTON, bounds={}, center=refined_coords,
@@ -1146,27 +1137,26 @@ class ExplorationEngine:
                 priority=Priority.HIGH,
                 reasoning=f"登录点击: {target}",
             )
-            action_result = self.action_executor.execute(action)
-            time.sleep(1)
-
-        elif action_type == "wait":
-            time.sleep(2)
-            action_result = "success"
+            self.action_executor.execute(action)
+            self._login_actions_done.append(f"点击'{target}' → ({refined_coords[0]:.2f}, {refined_coords[1]:.2f})")
 
         else:
             logger.warning(f"[步骤{step_number}] 未知登录操作类型: {action_type}")
-            action_result = "failed"
+            self._login_actions_done.append(f"未知操作: {action_type}")
 
-        self._login_step += 1
+        time.sleep(self.config.exploration.action_delay)
+
         return ExplorationStep(
             step_number=step_number, timestamp=time.time(),
-            screenshot_path="", screen_description=f"登录步骤{exec_index+1}: {target}",
+            screenshot_path=screenshot_path,
+            screen_description=f"登录: {target}",
             ui_tree_summary="",
             action_taken=AIDecision(
-                action=ActionType.CLICK, coordinates=tuple(coords) if coords else None,
-                priority=Priority.HIGH, reasoning=f"登录: {target}",
+                action=ActionType.CLICK if action_type == "click" else ActionType.TEXT_INPUT,
+                coordinates=tuple(coords) if coords else None,
+                priority=Priority.HIGH, reasoning=reasoning,
             ),
-            action_result=action_result, screen_fingerprint="",
+            action_result="success", screen_fingerprint="",
         )
 
     def _login_find_element(self, target: str, ai_coords) -> tuple:
@@ -1177,8 +1167,10 @@ class ExplorationEngine:
             return fallback
 
         # 从target描述提取关键词用于匹配
-        # target示例: "密码登录Tab", "手机号/账号输入框", "登录按钮", "同意协议复选框"
+        # target示例: "密码登录Tab", "手机号输入框", "登录按钮", "同意协议复选框"
         search_keywords = []
+        use_desc_first = False  # 优先用desc搜索（适用于复选框等无text的元素）
+
         if "密码登录" in target:
             search_keywords = ["密码登录", "密码"]
         elif "验证码登录" in target:
@@ -1191,17 +1183,28 @@ class ExplorationEngine:
             search_keywords = ["请输入密码", "密码", "password"]
         elif "登录" in target and "按钮" in target:
             search_keywords = ["登录", "登 录", "login", "Login"]
-        elif "同意" in target or "协议" in target:
-            search_keywords = ["同意", "阅读并同意", "已阅读"]
+        elif "同意" in target or "协议" in target or "复选" in target or "勾选" in target:
+            search_keywords = ["同意", "未选中", "已阅读"]
+            use_desc_first = True  # 复选框通常text为空，desc有内容如"未选中，同意"
         elif "跳过" in target:
             search_keywords = ["跳过", "skip"]
         else:
-            # 直接用target文字搜索
             search_keywords = [target]
 
         for keyword in search_keywords:
+            # 对复选框类元素，优先用desc匹配可点击的元素
+            if use_desc_first:
+                try:
+                    elem = poco(descMatches=f".*{keyword}.*", touchable=True)
+                    if elem.exists():
+                        pos = elem.get_position()
+                        logger.info(f"  -> 登录Poco desc匹配: '{keyword}' → ({pos[0]:.3f}, {pos[1]:.3f})")
+                        return (pos[0], pos[1])
+                except Exception:
+                    pass
+
             try:
-                # 先精确文本匹配
+                # 精确文本匹配
                 elem = poco(text=keyword)
                 if elem.exists():
                     pos = elem.get_position()
@@ -1210,7 +1213,7 @@ class ExplorationEngine:
             except Exception:
                 pass
             try:
-                # 再用textMatches模糊匹配
+                # textMatches模糊匹配
                 elem = poco(textMatches=f".*{keyword}.*")
                 if elem.exists():
                     pos = elem.get_position()
@@ -1227,8 +1230,7 @@ class ExplorationEngine:
         logger.warning(f"[步骤{step_number}] 自动登录失败: {reason}")
         self.state = self.previous_state or EngineState.DISCOVER_L1
         self.previous_state = None
-        self._login_step = 0
-        self._login_analysis = {}
+        self._login_actions_done = []
         return self._make_info_step(step_number, "", [], f"登录失败: {reason}")
 
     def _login_close_or_skip(self, step_number, analysis, screenshot_path, elements):
@@ -1247,7 +1249,7 @@ class ExplorationEngine:
             time.sleep(2)
             self.state = self.previous_state or EngineState.DISCOVER_L1
             self.previous_state = None
-            self._login_step = 0
+            self._login_actions_done = []
             return self._make_info_step(step_number, screenshot_path, elements, "点击游客登录")
 
         # 其次关闭登录弹窗
@@ -1265,7 +1267,7 @@ class ExplorationEngine:
             time.sleep(self.config.exploration.action_delay)
             self.state = self.previous_state or EngineState.DISCOVER_L1
             self.previous_state = None
-            self._login_step = 0
+            self._login_actions_done = []
             return self._make_info_step(step_number, screenshot_path, elements, "关闭登录弹窗")
 
         return self._login_fail(step_number, "无可执行的登录步骤")
@@ -2050,7 +2052,7 @@ class ExplorationEngine:
         logger.error(f"[回放降级] AI也找不到目标: {pb_step.target_text}")
         return self._make_error_step(step_number, screenshot_path, f"回放降级失败: {pb_step.description}")
 
-    def _fallback_to_record(self, app_package: str, from_step: int):
+    def _fallback_to_record(self, from_step: int):
         """回放异常时，从当前位置切换到录制模式继续"""
         logger.info(f"从步骤{from_step}开始切换到AI录制模式")
         self.state = EngineState.DISCOVER_L1
