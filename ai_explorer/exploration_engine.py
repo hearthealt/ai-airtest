@@ -888,6 +888,26 @@ class ExplorationEngine:
             self._pending_popup_type = ""
             return self._make_info_step(step_number, "", [], "登录弹窗，转入自动登录")
 
+        # 登录页面不需要登录：直接用坐标点击返回/关闭按钮，跳过弹窗存在性检查
+        # （登录页是全屏页面，不会自动消失，Poco也很难匹配到返回按钮）
+        if self._pending_popup_type == "login" and not self.config.login_required:
+            logger.info(f"[步骤{step_number}] 登录页面(不需要登录)，直接点击返回/关闭: '{self._pending_popup_text}'")
+            action = AIDecision(
+                action=ActionType.CLICK,
+                coordinates=self._pending_popup_coords,
+                is_popup=True,
+                priority=Priority.HIGH,
+                reasoning=f"关闭登录页: {self._pending_popup_text}",
+            )
+            self.action_executor.execute(action)
+            self._pending_popup_coords = None
+            self._pending_popup_text = ""
+            self._pending_popup_type = ""
+            self.state = self.previous_state or EngineState.DISCOVER_L1
+            self.previous_state = None
+            time.sleep(self.config.exploration.action_delay)
+            return self._make_info_step(step_number, "", [], "登录页面已关闭，不需要登录")
+
         # 点击前重新检查弹窗是否还存在（弹窗可能已自动消失）
         popup_text = self._pending_popup_text
         popup_still_exists = False
@@ -906,9 +926,9 @@ class ExplorationEngine:
             except Exception as e:
                 logger.info(f"  -> 弹窗检查: Poco文本查找异常: {e}")
 
-        # 方式2：文本像是图标描述（×、X、关闭等），用Poco通过name关键词查找关闭按钮
-        if not popup_still_exists and poco and popup_text in ('×', 'X', 'x', '关闭'):
-            _close_keywords = ('close', 'dismiss', 'cancel', 'shut', 'exit')
+        # 方式2：文本像是图标描述（×、X、关闭、<、←、返回等），用Poco通过name关键词查找按钮
+        if not popup_still_exists and poco and popup_text in ('×', 'X', 'x', '关闭', '<', '←', '返回'):
+            _close_keywords = ('close', 'dismiss', 'cancel', 'shut', 'exit', 'back', 'return', 'navigate_up', 'nav_back')
             try:
                 for kw in _close_keywords:
                     elem = poco(nameMatches=f'.*{kw}.*')
@@ -1098,9 +1118,11 @@ class ExplorationEngine:
                 return self._make_info_step(step_number, "", [], f"输入为空，跳过: {target}")
 
             logger.info(f"[步骤{step_number}] 登录步骤{exec_index+1}: 输入'{target}'")
+            # 优先用Poco找输入框
+            refined_coords = self._login_find_element(target, coords)
             action = AIDecision(
                 action=ActionType.TEXT_INPUT,
-                coordinates=tuple(coords) if coords else None,
+                coordinates=refined_coords,
                 text_input=input_text,
                 priority=Priority.HIGH,
                 reasoning=f"登录输入: {target}",
@@ -1110,9 +1132,17 @@ class ExplorationEngine:
 
         elif action_type == "click":
             logger.info(f"[步骤{step_number}] 登录步骤{exec_index+1}: 点击'{target}'")
+            # 优先用Poco找按钮
+            refined_coords = self._login_find_element(target, coords)
+            target_element = UIElement(
+                name="", text=target, desc="", type="button",
+                control_type=ControlType.BUTTON, bounds={}, center=refined_coords,
+                clickable=True, enabled=True, visible=True,
+            ) if target else None
             action = AIDecision(
                 action=ActionType.CLICK,
-                coordinates=tuple(coords) if coords else None,
+                target_element=target_element,
+                coordinates=refined_coords,
                 priority=Priority.HIGH,
                 reasoning=f"登录点击: {target}",
             )
@@ -1138,6 +1168,59 @@ class ExplorationEngine:
             ),
             action_result=action_result, screen_fingerprint="",
         )
+
+    def _login_find_element(self, target: str, ai_coords) -> tuple:
+        """登录时用Poco精确查找元素坐标，找不到就用AI坐标兜底。"""
+        poco = getattr(self.dd, 'poco', None)
+        fallback = tuple(ai_coords) if ai_coords else (0.5, 0.5)
+        if not poco or not target:
+            return fallback
+
+        # 从target描述提取关键词用于匹配
+        # target示例: "密码登录Tab", "手机号/账号输入框", "登录按钮", "同意协议复选框"
+        search_keywords = []
+        if "密码登录" in target:
+            search_keywords = ["密码登录", "密码"]
+        elif "验证码登录" in target:
+            search_keywords = ["验证码登录", "验证码"]
+        elif "手机号登录" in target:
+            search_keywords = ["手机号登录", "手机", "一键登录"]
+        elif "手机" in target or "账号" in target:
+            search_keywords = ["手机号", "账号", "请输入手机号", "请输入账号", "phone"]
+        elif "密码" in target and "输入" in target:
+            search_keywords = ["请输入密码", "密码", "password"]
+        elif "登录" in target and "按钮" in target:
+            search_keywords = ["登录", "登 录", "login", "Login"]
+        elif "同意" in target or "协议" in target:
+            search_keywords = ["同意", "阅读并同意", "已阅读"]
+        elif "跳过" in target:
+            search_keywords = ["跳过", "skip"]
+        else:
+            # 直接用target文字搜索
+            search_keywords = [target]
+
+        for keyword in search_keywords:
+            try:
+                # 先精确文本匹配
+                elem = poco(text=keyword)
+                if elem.exists():
+                    pos = elem.get_position()
+                    logger.info(f"  -> 登录Poco匹配: text='{keyword}' → ({pos[0]:.3f}, {pos[1]:.3f})")
+                    return (pos[0], pos[1])
+            except Exception:
+                pass
+            try:
+                # 再用textMatches模糊匹配
+                elem = poco(textMatches=f".*{keyword}.*")
+                if elem.exists():
+                    pos = elem.get_position()
+                    logger.info(f"  -> 登录Poco模糊匹配: '{keyword}' → ({pos[0]:.3f}, {pos[1]:.3f})")
+                    return (pos[0], pos[1])
+            except Exception:
+                pass
+
+        logger.info(f"  -> 登录Poco未匹配到'{target}'，使用AI坐标{fallback}")
+        return fallback
 
     def _login_fail(self, step_number: int, reason: str) -> ExplorationStep:
         """登录失败：回退到之前的状态"""
