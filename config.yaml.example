@@ -60,3 +60,7 @@ router:
 
 # 输出目录
 output_dir: "E:\\tmp\\explore"
+
+# 回放配置
+replay_mode: "auto"              # auto=有playbook就回放 / record=强制录制 / replay=强制回放
+playbook_dir: ""                 # playbook保存目录（留空默认为项目根目录/playbooks）

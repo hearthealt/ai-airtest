@@ -16,6 +16,7 @@ from .ui_analyzer import UIAnalyzer
 from .screen_state import ScreenManager
 from .action_executor import ActionExecutor
 from .logger import ExplorationLogger
+from .playbook import Playbook, PlaybookStep, VerifyCondition, PlaybackVerifier
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,6 @@ class ExplorationEngine:
         self.state = EngineState.DISCOVER_L1
         self.menu_structure = MenuStructure()
         self.previous_state: Optional[EngineState] = None
-        self.blocking_failure = False
         self.tested_controls: List[str] = []
 
         # 阻断检查
@@ -63,6 +63,8 @@ class ExplorationEngine:
         self._pending_popup_type: str = ""  # 弹窗类型: login/permission/ad/other
         self.popup_retry_count = 0
         self.max_popup_retries = 3
+        self._onboarding_step_count = 0  # onboarding引导页操作计数
+        self._max_onboarding_steps = 10  # onboarding最多操作次数，防止死循环
 
         # 登录处理
         self._login_step: int = 0  # 登录子步骤
@@ -74,11 +76,32 @@ class ExplorationEngine:
         self._back_retry_count: int = 0
         self._max_back_retries: int = 3
 
+        # Playbook 录制/回放
+        import os
+        playbook_dir = config.playbook_dir or os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "playbooks"
+        )
+        self.playbook = Playbook(config.package_name, playbook_dir, mode=config.mode)
+        self.playback_verifier = PlaybackVerifier(device_driver)
+
     def run(self, app_package: str = "") -> ExplorationResult:
         self.start_time = time.time()
         self.app_package = app_package
-        logger.info(f"=== 结构化阻断测试开始 | 应用={app_package} ===")
 
+        # 确定运行模式
+        replay_mode = self.config.replay_mode
+        if replay_mode == "auto":
+            replay_mode = "replay" if self.playbook.exists() else "record"
+
+        if replay_mode == "replay":
+            logger.info(f"=== 回放模式开始 | 应用={app_package} ===")
+            return self._run_replay(app_package)
+        else:
+            logger.info(f"=== 录制模式开始 | 应用={app_package} ===")
+            return self._run_record(app_package)
+
+    def _run_record(self, app_package: str) -> ExplorationResult:
+        """录制模式：正常AI驱动探索 + 每步录制到playbook"""
         if app_package:
             try:
                 self.dd.start_app(app_package)
@@ -99,14 +122,13 @@ class ExplorationEngine:
                 self.steps.append(step)
                 self.exploration_logger.log_step(step)
 
+                # 录制这一步
+                self._record_current_step(step_number, step)
+
                 if step.action_result == "error":
                     self.consecutive_errors += 1
                 else:
                     self.consecutive_errors = 0
-
-                if self.blocking_failure and self.config.mode == 0:
-                    logger.error(f"★ 阻断失败！'{self.last_clicked_target}' 页面正常加载了数据，测试终止")
-                    break
 
                 if self.state == EngineState.COMPLETE:
                     logger.info("所有L1和L2菜单测试完成")
@@ -119,15 +141,112 @@ class ExplorationEngine:
                 self.consecutive_errors += 1
                 time.sleep(self.config.exploration.action_delay)
 
+        # 保存菜单结构到playbook
+        self._save_menu_structure_to_playbook()
+        self.playbook.save()
+
         if self.config.mode == 1:
-            # 功能测试模式：统计正常/异常
             successes = [i for i in self.issues_found if i["type"] == "function_success"]
             failures = [i for i in self.issues_found if i["type"] == "function_failure"]
             logger.info(f"=== 功能测试结果: {len(successes)}个正常, {len(failures)}个异常 | 已测控件: {self.tested_controls} ===")
-        elif self.blocking_failure:
-            logger.info(f"=== 测试结果: 阻断失败 | 共{len(self.steps)}步 ===")
         else:
-            logger.info(f"=== 测试结果: 全部阻断成功 | 已测控件: {self.tested_controls} ===")
+            successes = [i for i in self.issues_found if i["type"] == "block_success"]
+            failures = [i for i in self.issues_found if i["type"] == "block_failure"]
+            logger.info(f"=== 阻断测试结果: {len(successes)}个阻断成功, {len(failures)}个阻断失败 | 已测控件: {self.tested_controls} ===")
+        return self._build_result(app_package)
+
+    def _run_replay(self, app_package: str) -> ExplorationResult:
+        """回放模式：加载playbook，逐步执行，check步调AI，其他步直接操作"""
+        if not self.playbook.load():
+            logger.warning("Playbook加载失败，降级为录制模式")
+            return self._run_record(app_package)
+
+        if app_package:
+            try:
+                self.dd.start_app(app_package)
+                time.sleep(3)
+            except Exception as e:
+                logger.error(f"启动应用失败: {e}")
+
+        # 从playbook恢复菜单结构
+        self._load_menu_structure_from_playbook()
+
+        step_number = 0
+        for i, pb_step in enumerate(self.playbook.steps):
+            # discover_l1 / discover_l2 等信息步骤，回放时静默跳过
+            if pb_step.action not in ("check", "close_popup", "click_l1", "click_l2", "back"):
+                continue
+
+            step_number += 1
+            step_start = time.time()
+            logger.info("=" * 60)
+
+            try:
+                if pb_step.action == "check":
+                    # check步骤必须调AI
+                    logger.info(f"[回放-步骤{step_number}] AI检查: {pb_step.description}")
+                    step = self._replay_check_step(step_number, pb_step)
+
+                elif pb_step.action == "close_popup":
+                    step = self._replay_close_popup(step_number, pb_step)
+
+                elif pb_step.action in ("click_l1", "click_l2"):
+                    step = self._replay_click(step_number, pb_step)
+
+                elif pb_step.action == "back":
+                    logger.info(f"[回放-步骤{step_number}] 返回: {pb_step.description}")
+                    # 返回前截图
+                    screenshot_path = self._replay_screenshot(step_number)
+                    # 有坐标说明是点击返回按钮，否则用系统返回键
+                    if pb_step.coordinates:
+                        target_element = None
+                        if pb_step.target_text or pb_step.target_name:
+                            target_element = UIElement(
+                                name=pb_step.target_name or "", text=pb_step.target_text or "",
+                                desc="", type="button",
+                                control_type=ControlType.BUTTON, bounds={},
+                                center=pb_step.coordinates,
+                                clickable=True, enabled=True, visible=True,
+                            )
+                        action = AIDecision(
+                            action=ActionType.CLICK,
+                            target_element=target_element,
+                            coordinates=pb_step.coordinates,
+                            priority=Priority.HIGH,
+                            reasoning=f"回放点击返回按钮: {pb_step.target_text}",
+                        )
+                    else:
+                        action = AIDecision(
+                            action=ActionType.BACK,
+                            priority=Priority.HIGH,
+                            reasoning="回放系统返回键",
+                        )
+                    result = self.action_executor.execute(action)
+                    step = self._make_info_step(step_number, screenshot_path, [], pb_step.description)
+                    step.action_taken = action
+                    step.action_result = result
+
+                step.duration_ms = int((time.time() - step_start) * 1000)
+                self.steps.append(step)
+                self.exploration_logger.log_step(step)
+
+                time.sleep(self.config.exploration.action_delay)
+
+            except Exception as e:
+                logger.error(f"回放步骤{step_number}异常: {e}")
+                # 降级：从当前位置切换到录制模式
+                logger.warning(f"回放异常，从步骤{step_number}开始降级为AI模式")
+                self._fallback_to_record(app_package, step_number)
+                break
+
+        if self.config.mode == 1:
+            successes = [i for i in self.issues_found if i["type"] == "function_success"]
+            failures = [i for i in self.issues_found if i["type"] == "function_failure"]
+            logger.info(f"=== 功能测试结果: {len(successes)}个正常, {len(failures)}个异常 | 已测控件: {self.tested_controls} ===")
+        else:
+            successes = [i for i in self.issues_found if i["type"] == "block_success"]
+            failures = [i for i in self.issues_found if i["type"] == "block_failure"]
+            logger.info(f"=== 阻断测试结果: {len(successes)}个阻断成功, {len(failures)}个阻断失败 | 已测控件: {self.tested_controls} ===")
         return self._build_result(app_package)
 
     # ==================== 状态机调度 ====================
@@ -500,11 +619,14 @@ class ExplorationEngine:
                     action_result="loading", screen_fingerprint="",
                 )
         else:
-            # ★ 阻断失败
+            # ★ 阻断失败（记录但继续测下一个）
             logger.error(f"[步骤{step_number}] ✗ 阻断失败: '{self.last_clicked_target}' → {desc}")
             self._record_block_result(step_number, "block_failure", desc, screenshot_path)
             self._update_current_menu_item("block_failure", desc, screenshot_path)
-            self.blocking_failure = True
+            if not self.menu_structure.advance_l2():
+                self._advance_to_next_l1()
+            else:
+                self.state = EngineState.TEST_L2
             return ExplorationStep(
                 step_number=step_number, timestamp=time.time(),
                 screenshot_path=screenshot_path,
@@ -672,7 +794,7 @@ class ExplorationEngine:
                 l1.status = "block_failure"
                 l1.block_result = desc
                 l1.screenshot_path = screenshot_path
-            self.blocking_failure = True
+            self._advance_to_next_l1()
             return ExplorationStep(
                 step_number=step_number, timestamp=time.time(),
                 screenshot_path=screenshot_path,
@@ -852,20 +974,36 @@ class ExplorationEngine:
         )
         action_result = self.action_executor.execute(action)
 
-        # 清除弹窗信息，回到之前状态
+        # onboarding弹窗需要多步操作（选性别→选年龄→下一步→...），
+        # 点击后不清除弹窗状态，回到之前状态让AI重新识别，直到引导结束
+        popup_type = self._pending_popup_type
         self._pending_popup_coords = None
         self._pending_popup_text = ""
         self._pending_popup_type = ""
         self.state = self.previous_state or EngineState.DISCOVER_L1
         self.previous_state = None
 
+        # onboarding计数，超限则强制跳过
+        if popup_type == "onboarding":
+            self._onboarding_step_count += 1
+            if self._onboarding_step_count >= self._max_onboarding_steps:
+                logger.warning(f"[步骤{step_number}] onboarding引导页操作已达{self._max_onboarding_steps}次上限，强制跳过")
+                self._onboarding_step_count = 0
+        else:
+            self._onboarding_step_count = 0
+
         time.sleep(self.config.exploration.action_delay)
+
+        desc = f"关闭弹窗"
+        if popup_type == "onboarding":
+            desc = f"引导页操作: {popup_text}（将重新识别引导状态）"
+            logger.info(f"[步骤{step_number}] onboarding引导页，点击'{popup_text}'后将重新检测")
 
         return ExplorationStep(
             step_number=step_number,
             timestamp=time.time(),
             screenshot_path="",
-            screen_description=f"关闭弹窗",
+            screen_description=desc,
             ui_tree_summary="",
             action_taken=action,
             action_result=action_result,
@@ -1356,8 +1494,6 @@ class ExplorationEngine:
         )
 
     def _should_stop(self, step_number: int) -> bool:
-        if self.blocking_failure and self.config.mode == 0:
-            return True
         if self.state == EngineState.COMPLETE:
             return True
         if step_number >= self.config.exploration.max_steps:
@@ -1399,3 +1535,467 @@ class ExplorationEngine:
             steps=self.steps, screens=self.screen_manager.screens,
             issues_found=self.issues_found, exploration_graph=self.exploration_graph,
         )
+
+    # ==================== Playbook 录制辅助 ====================
+
+    def _record_current_step(self, step_number: int, step: ExplorationStep):
+        """根据当前状态和步骤信息，录制一条PlaybookStep"""
+        action_taken = step.action_taken
+        desc = step.screen_description
+
+        # 根据步骤描述和状态判断action类型
+        if "关闭弹窗" in desc or (action_taken and action_taken.is_popup):
+            pb_action = "close_popup"
+            target_text = ""
+            target_name = ""
+            coords = ()
+            if action_taken and action_taken.target_element:
+                target_text = action_taken.target_element.text or ""
+                target_name = action_taken.target_element.name or ""
+                coords = action_taken.coordinates or action_taken.target_element.center or ()
+            elif action_taken:
+                coords = action_taken.coordinates or ()
+            # verify: 文本或name
+            verify = VerifyCondition()
+            if target_text and target_text not in ('×', 'X', 'x', '✕', '✖'):
+                verify.has_text = target_text
+            if target_name:
+                verify.has_name = target_name
+
+        elif "弹窗已自动消失" in desc or "弹窗'" in desc:
+            # 弹窗自动消失，跳过步骤
+            pb_action = "skip_popup"
+            target_text = ""
+            target_name = ""
+            coords = ()
+            verify = VerifyCondition()
+
+        elif "点击L2" in desc:
+            pb_action = "click_l2"
+            l2 = self.menu_structure.current_l2()
+            l1 = self.menu_structure.current_l1()
+            target_text = l2.element_text if l2 else ""
+            target_name = l2.element_name if l2 else ""
+            coords = l2.coordinates if l2 else ()
+            l1_name = l1.name if l1 else ""
+            # verify: L1 + L2名同时存在
+            verify = VerifyCondition()
+            verify_texts = []
+            if l1:
+                verify_texts.append(l1.name)
+            if l2:
+                verify_texts.append(l2.name)
+            if len(verify_texts) >= 2:
+                verify.has_all_text = verify_texts
+            self.playbook.record_step(PlaybookStep(
+                step=step_number, action=pb_action,
+                target_text=target_text, target_name=target_name,
+                coordinates=coords, l1_name=l1_name,
+                description=desc, verify=verify,
+            ))
+            return
+
+        elif "返回" in desc:
+            pb_action = "back"
+            target_text = ""
+            target_name = ""
+            coords = ()
+            # 从action_taken提取返回按钮信息（点击返回按钮 vs 系统返回键）
+            if action_taken and action_taken.action == ActionType.CLICK:
+                if action_taken.target_element:
+                    target_text = action_taken.target_element.text or ""
+                    target_name = action_taken.target_element.name or ""
+                    coords = action_taken.coordinates or action_taken.target_element.center or ()
+                else:
+                    coords = action_taken.coordinates or ()
+            self.playbook.record_step(PlaybookStep(
+                step=step_number, action=pb_action, description=desc,
+                target_text=target_text, target_name=target_name,
+                coordinates=coords,
+            ))
+            return
+
+        elif "切换L1" in desc or "切换到L1" in desc:
+            pb_action = "click_l1"
+            l1 = self.menu_structure.current_l1()
+            target_text = l1.element_text if l1 else ""
+            target_name = l1.element_name if l1 else ""
+            coords = l1.coordinates if l1 else ()
+            # verify: 任意一个L1名称存在
+            verify = VerifyCondition()
+            l1_names = [item.name for item in self.menu_structure.l1_items]
+            if l1_names:
+                verify.has_any_text = l1_names
+            self.playbook.record_step(PlaybookStep(
+                step=step_number, action=pb_action,
+                target_text=target_text, target_name=target_name,
+                coordinates=coords, description=desc, verify=verify,
+            ))
+            return
+
+        elif step.action_result in (
+            "block_success", "block_failure", "function_success", "function_failure"
+        ):
+            pb_action = "check"
+            self.playbook.record_step(PlaybookStep(
+                step=step_number, action=pb_action,
+                target_text=self.last_clicked_target,
+                description=desc,
+                expected_result=step.action_result,
+            ))
+            return
+
+        elif "L1" in desc and ("底部导航" in desc or "菜单" in desc):
+            pb_action = "discover_l1"
+            self.playbook.record_step(PlaybookStep(
+                step=step_number, action=pb_action, description=desc,
+            ))
+            return
+
+        elif "L2" in desc and ("标签" in desc or "Tab" in desc):
+            pb_action = "discover_l2"
+            self.playbook.record_step(PlaybookStep(
+                step=step_number, action=pb_action, description=desc,
+            ))
+            return
+
+        else:
+            # 其他信息性步骤
+            pb_action = "info"
+            self.playbook.record_step(PlaybookStep(
+                step=step_number, action=pb_action, description=desc,
+            ))
+            return
+
+        # close_popup / skip_popup
+        self.playbook.record_step(PlaybookStep(
+            step=step_number, action=pb_action,
+            target_text=target_text, target_name=target_name,
+            coordinates=coords, description=desc, verify=verify,
+        ))
+
+    def _save_menu_structure_to_playbook(self):
+        """把菜单结构保存到playbook"""
+        l1_data = []
+        for item in self.menu_structure.l1_items:
+            l1_data.append({
+                "name": item.name,
+                "element_text": item.element_text,
+                "element_name": item.element_name,
+                "coordinates": list(item.coordinates) if item.coordinates else [],
+            })
+
+        l2_data = {}
+        for l1_name, l2_list in self.menu_structure.l2_map.items():
+            l2_data[l1_name] = []
+            for item in l2_list:
+                l2_data[l1_name].append({
+                    "name": item.name,
+                    "element_text": item.element_text,
+                    "element_name": item.element_name,
+                    "coordinates": list(item.coordinates) if item.coordinates else [],
+                    "is_selected": item.is_selected,
+                })
+
+        self.playbook.menu_structure = {
+            "l1_items": l1_data,
+            "l2_map": l2_data,
+        }
+
+    def _load_menu_structure_from_playbook(self):
+        """从playbook恢复菜单结构"""
+        ms = self.playbook.menu_structure
+        if not ms:
+            return
+
+        self.menu_structure = MenuStructure()
+        for item in ms.get("l1_items", []):
+            coords = item.get("coordinates", [])
+            self.menu_structure.l1_items.append(MenuItemInfo(
+                name=item.get("name", ""),
+                element_text=item.get("element_text", ""),
+                element_name=item.get("element_name", ""),
+                coordinates=tuple(coords) if coords else (),
+                level=1,
+            ))
+
+        for l1_name, l2_list in ms.get("l2_map", {}).items():
+            self.menu_structure.l2_map[l1_name] = []
+            for item in l2_list:
+                coords = item.get("coordinates", [])
+                self.menu_structure.l2_map[l1_name].append(MenuItemInfo(
+                    name=item.get("name", ""),
+                    element_text=item.get("element_text", ""),
+                    element_name=item.get("element_name", ""),
+                    coordinates=tuple(coords) if coords else (),
+                    level=2,
+                    is_selected=item.get("is_selected", False),
+                ))
+
+    # ==================== Playbook 回放辅助 ====================
+
+    def _replay_screenshot(self, step_number: int) -> str:
+        """回放时轻量截图（不等screenshot_delay，不提取UI树）"""
+        try:
+            return self.ui_analyzer.capture_screenshot(f"step{step_number}") or ""
+        except Exception:
+            return ""
+
+    def _replay_close_popup(self, step_number: int, pb_step: PlaybookStep) -> ExplorationStep:
+        """回放关闭弹窗：多种方式验证弹窗是否存在"""
+        popup_exists = False
+        poco = getattr(self.dd, 'poco', None)
+
+        # 方式1：verify条件验证
+        if self.playback_verifier.verify(pb_step.verify):
+            popup_exists = True
+            logger.info(f"  -> 回放弹窗检查: verify条件通过")
+
+        # 方式2：用target_text直接搜索
+        if not popup_exists and poco and pb_step.target_text:
+            try:
+                if poco(text=pb_step.target_text).exists():
+                    popup_exists = True
+                    logger.info(f"  -> 回放弹窗检查: Poco文本匹配到'{pb_step.target_text}'")
+            except Exception:
+                pass
+
+        # 方式3：用target_name搜索
+        if not popup_exists and poco and pb_step.target_name:
+            try:
+                if poco(nameMatches=f".*{pb_step.target_name}.*").exists():
+                    popup_exists = True
+                    logger.info(f"  -> 回放弹窗检查: Poco name匹配到'{pb_step.target_name}'")
+            except Exception:
+                pass
+
+        # 方式4：常见关闭按钮name关键词兜底
+        if not popup_exists and poco and pb_step.target_text in ('关闭', '×', 'X', 'x', '✕'):
+            for kw in ('close', 'dismiss', 'cancel'):
+                try:
+                    if poco(nameMatches=f'.*{kw}.*').exists():
+                        popup_exists = True
+                        logger.info(f"  -> 回放弹窗检查: Poco name关键词'{kw}'匹配到关闭按钮")
+                        break
+                except Exception:
+                    pass
+
+        if not popup_exists:
+            logger.info(f"[回放-步骤{step_number}] 跳过: {pb_step.description}（弹窗未出现）")
+            time.sleep(self.config.exploration.action_delay)
+            return self._make_info_step(step_number, "", [], f"跳过: {pb_step.description}")
+
+        logger.info(f"[回放-步骤{step_number}] 关闭弹窗: {pb_step.description}")
+        # 点击前截图
+        screenshot_path = self._replay_screenshot(step_number)
+        # 构建点击动作
+        target_element = None
+        if pb_step.target_text:
+            target_element = UIElement(
+                name=pb_step.target_name or "", text=pb_step.target_text, desc="", type="button",
+                control_type=ControlType.BUTTON, bounds={}, center=pb_step.coordinates or (),
+                clickable=True, enabled=True, visible=True,
+            )
+        action = AIDecision(
+            action=ActionType.CLICK,
+            target_element=target_element,
+            coordinates=pb_step.coordinates,
+            is_popup=True,
+            priority=Priority.HIGH,
+            reasoning=f"回放关闭弹窗: {pb_step.target_text}",
+        )
+        result = self.action_executor.execute(action)
+        step = self._make_info_step(step_number, screenshot_path, [], f"关闭弹窗: {pb_step.target_text}")
+        step.action_taken = action
+        step.action_result = result
+        return step
+
+    def _replay_click(self, step_number: int, pb_step: PlaybookStep) -> ExplorationStep:
+        """回放点击L1/L2：先验证页面状态"""
+        verified = self.playback_verifier.verify(pb_step.verify)
+        if not verified:
+            logger.warning(f"[回放-步骤{step_number}] 验证失败: {pb_step.description}，降级AI")
+            return self._replay_fallback_ai(step_number, pb_step)
+
+        logger.info(f"[回放-步骤{step_number}] 点击: {pb_step.description}")
+        # 点击前截图
+        screenshot_path = self._replay_screenshot(step_number)
+        target_element = UIElement(
+            name=pb_step.target_name or "", text=pb_step.target_text, desc="", type="tab",
+            control_type=ControlType.TAB, bounds={}, center=pb_step.coordinates or (),
+            clickable=True, enabled=True, visible=True,
+        )
+        action = AIDecision(
+            action=ActionType.CLICK,
+            target_element=target_element,
+            coordinates=pb_step.coordinates,
+            priority=Priority.HIGH,
+            reasoning=f"回放点击: {pb_step.target_text}",
+        )
+        result = self.action_executor.execute(action)
+
+        # 更新tested_controls
+        if pb_step.action == "click_l2" and pb_step.l1_name:
+            target_name = f"{pb_step.l1_name}-{pb_step.target_text}"
+        else:
+            target_name = pb_step.target_text or ""
+        # target_text为空时从description提取名称兜底
+        if not target_name and pb_step.description:
+            if ": " in pb_step.description:
+                target_name = pb_step.description.split(": ", 1)[1]
+            elif "：" in pb_step.description:
+                target_name = pb_step.description.split("：", 1)[1]
+        self.last_clicked_target = target_name
+        if target_name and target_name not in self.tested_controls:
+            self.tested_controls.append(target_name)
+
+        step = self._make_info_step(step_number, screenshot_path, [], pb_step.description)
+        step.action_taken = action
+        step.action_result = result
+        return step
+
+    def _replay_check_step(self, step_number: int, pb_step: PlaybookStep) -> ExplorationStep:
+        """回放check步骤：必须调AI"""
+        self.last_clicked_target = pb_step.target_text or self.last_clicked_target
+        # 复用现有的check逻辑
+        screenshot_path, elements, ui_tree_text = self._capture_and_analyze(step_number)
+        if not screenshot_path:
+            return self._make_error_step(step_number, "", "截图捕获失败")
+
+        mode = self.config.mode
+        mode_label = "功能检查" if mode == 1 else "阻断检查"
+        logger.info(f"[回放-步骤{step_number}] AI{mode_label}: '{self.last_clicked_target}'...")
+        result = self.ai_client.check_block_status(screenshot_path, ui_tree_text, self.last_clicked_target, mode=mode)
+
+        # 弹窗检测
+        if result.get("has_popup") and result.get("popup_close_button"):
+            btn = result["popup_close_button"]
+            raw_coords = self._normalize_coords(tuple(btn.get("coordinates", (0.5, 0.5))))
+            refined_coords = self._refine_popup_coords(raw_coords, elements)
+            popup_text = btn.get("text", "关闭")
+            # 直接关闭弹窗再重新检查
+            logger.info(f"[回放-步骤{step_number}] 检测到弹窗，关闭: '{popup_text}'")
+            popup_target = UIElement(
+                name="", text=popup_text, desc="", type="button",
+                control_type=ControlType.BUTTON, bounds={}, center=refined_coords,
+                clickable=True, enabled=True, visible=True,
+            )
+            self.action_executor.execute(AIDecision(
+                action=ActionType.CLICK, target_element=popup_target,
+                coordinates=refined_coords, is_popup=True,
+                priority=Priority.HIGH, reasoning=f"回放关闭弹窗: {popup_text}",
+            ))
+            time.sleep(self.config.exploration.action_delay)
+            # 重新截图检查
+            screenshot_path, elements, ui_tree_text = self._capture_and_analyze(step_number)
+            if not screenshot_path:
+                return self._make_error_step(step_number, "", "截图捕获失败")
+            result = self.ai_client.check_block_status(screenshot_path, ui_tree_text, self.last_clicked_target, mode=mode)
+
+        is_error = result.get("is_error_screen", False)
+        is_loading = result.get("is_loading", False)
+        desc = result.get("error_description", "") or result.get("screen_description", "")
+
+        if mode == 1:
+            return self._check_block_mode1(step_number, screenshot_path, elements, is_error, is_loading, desc)
+        else:
+            return self._check_block_mode0(step_number, screenshot_path, elements, is_error, is_loading, desc)
+
+    def _replay_fallback_ai(self, step_number: int, pb_step: PlaybookStep) -> ExplorationStep:
+        """回放验证失败时，降级调AI分析当前页面"""
+        screenshot_path, elements, ui_tree_text = self._capture_and_analyze(step_number)
+        if not screenshot_path:
+            return self._make_error_step(step_number, "", "降级截图失败")
+
+        # 根据目标类型调用不同的AI
+        if pb_step.action == "click_l1":
+            logger.info(f"[回放降级] AI重新识别L1菜单")
+            result = self.ai_client.discover_l1_menus(screenshot_path, ui_tree_text)
+            # 尝试在AI结果中找到目标L1
+            for item in result.get("l1_items", []):
+                if item.get("name") == pb_step.target_text:
+                    coords = tuple(item.get("coordinates", []))
+                    target = UIElement(
+                        name="", text=pb_step.target_text, desc="", type="tab",
+                        control_type=ControlType.TAB, bounds={}, center=coords,
+                        clickable=True, enabled=True, visible=True,
+                    )
+                    action = AIDecision(
+                        action=ActionType.CLICK, target_element=target,
+                        coordinates=coords, priority=Priority.HIGH,
+                        reasoning=f"降级AI点击L1: {pb_step.target_text}",
+                    )
+                    action_result = self.action_executor.execute(action)
+                    self.last_clicked_target = pb_step.target_text
+                    if pb_step.target_text and pb_step.target_text not in self.tested_controls:
+                        self.tested_controls.append(pb_step.target_text)
+                    step = self._make_info_step(step_number, screenshot_path, elements,
+                                                f"降级AI点击L1: {pb_step.target_text}")
+                    step.action_taken = action
+                    step.action_result = action_result
+                    return step
+
+        elif pb_step.action == "click_l2":
+            l1_name = pb_step.l1_name or ""
+            logger.info(f"[回放降级] AI重新识别L2标签 (L1={l1_name})")
+            result = self.ai_client.discover_l2_tabs(screenshot_path, ui_tree_text, l1_name)
+            for item in result.get("l2_items", []):
+                if item.get("name") == pb_step.target_text:
+                    coords = tuple(item.get("coordinates", []))
+                    target = UIElement(
+                        name="", text=pb_step.target_text, desc="", type="tab",
+                        control_type=ControlType.TAB, bounds={}, center=coords,
+                        clickable=True, enabled=True, visible=True,
+                    )
+                    action = AIDecision(
+                        action=ActionType.CLICK, target_element=target,
+                        coordinates=coords, priority=Priority.HIGH,
+                        reasoning=f"降级AI点击L2: {pb_step.target_text}",
+                    )
+                    action_result = self.action_executor.execute(action)
+                    target_name = f"{l1_name}-{pb_step.target_text}" if l1_name else pb_step.target_text
+                    self.last_clicked_target = target_name
+                    if target_name not in self.tested_controls:
+                        self.tested_controls.append(target_name)
+                    step = self._make_info_step(step_number, screenshot_path, elements,
+                                                f"降级AI点击L2: {pb_step.target_text}")
+                    step.action_taken = action
+                    step.action_result = action_result
+                    return step
+
+        # 降级也找不到 → 返回错误
+        logger.error(f"[回放降级] AI也找不到目标: {pb_step.target_text}")
+        return self._make_error_step(step_number, screenshot_path, f"回放降级失败: {pb_step.description}")
+
+    def _fallback_to_record(self, app_package: str, from_step: int):
+        """回放异常时，从当前位置切换到录制模式继续"""
+        logger.info(f"从步骤{from_step}开始切换到AI录制模式")
+        self.state = EngineState.DISCOVER_L1
+
+        step_number = from_step
+        while not self._should_stop(step_number):
+            step_number += 1
+            step_start = time.time()
+            try:
+                step = self._execute_state_step(step_number)
+                step.duration_ms = int((time.time() - step_start) * 1000)
+                self.steps.append(step)
+                self.exploration_logger.log_step(step)
+                self._record_current_step(step_number, step)
+
+                if step.action_result == "error":
+                    self.consecutive_errors += 1
+                else:
+                    self.consecutive_errors = 0
+
+                if self.state == EngineState.COMPLETE:
+                    break
+
+                time.sleep(self.config.exploration.action_delay)
+            except Exception as e:
+                logger.error(f"步骤{step_number}异常: {e}")
+                self.consecutive_errors += 1
+                time.sleep(self.config.exploration.action_delay)
+
+        self._save_menu_structure_to_playbook()
+        self.playbook.save()

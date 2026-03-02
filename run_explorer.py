@@ -71,7 +71,7 @@ def run_exploration(config: Config):
     )
 
     logger = logging.getLogger(__name__)
-    logger.info(f"配置信息: value={config.l_class}, 包名={config.package_name}, 平台={config.device.platform}, 模式={'功能测试' if config.mode == 1 else '阻断测试'}")
+    logger.info(f"配置信息: value={config.l_class}, 包名={config.package_name}, 平台={config.device.platform}, 模式={'功能测试' if config.mode == 1 else '阻断测试'}(mode={config.mode}), 回放={config.replay_mode}")
     logger.info(f"日志目录: {config.logdir}")
 
     # 连接设备并创建驱动

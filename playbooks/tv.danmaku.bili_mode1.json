@@ -1,0 +1,704 @@
+{
+  "app_package": "tv.danmaku.bili",
+  "mode": 1,
+  "mode_label": "功能测试",
+  "version": 1,
+  "menu_structure": {
+    "l1_items": [
+      {
+        "name": "首页",
+        "element_text": "首页",
+        "element_name": "tv.danmaku.bili:id/normal_ll",
+        "coordinates": [
+          0.1,
+          0.956
+        ]
+      },
+      {
+        "name": "关注",
+        "element_text": "关注",
+        "element_name": "tv.danmaku.bili:id/normal_ll",
+        "coordinates": [
+          0.3,
+          0.956
+        ]
+      },
+      {
+        "name": "发布内容",
+        "element_text": "",
+        "element_name": "tv.danmaku.bili:id/publish_remote_iv",
+        "coordinates": [
+          0.5,
+          0.956
+        ]
+      },
+      {
+        "name": "会员购",
+        "element_text": "会员购",
+        "element_name": "tv.danmaku.bili:id/normal_ll",
+        "coordinates": [
+          0.7,
+          0.956
+        ]
+      },
+      {
+        "name": "我的",
+        "element_text": "我的",
+        "element_name": "tv.danmaku.bili:id/normal_ll",
+        "coordinates": [
+          0.9,
+          0.956
+        ]
+      }
+    ],
+    "l2_map": {
+      "首页": [
+        {
+          "name": "直播",
+          "element_text": "直播",
+          "element_name": "tv.danmaku.bili:id/tab_title",
+          "coordinates": [
+            0.101,
+            0.12
+          ],
+          "is_selected": false
+        },
+        {
+          "name": "推荐",
+          "element_text": "推荐",
+          "element_name": "tv.danmaku.bili:id/tab_title",
+          "coordinates": [
+            0.234,
+            0.12
+          ],
+          "is_selected": true
+        },
+        {
+          "name": "热门",
+          "element_text": "热门",
+          "element_name": "tv.danmaku.bili:id/tab_title",
+          "coordinates": [
+            0.368,
+            0.12
+          ],
+          "is_selected": false
+        },
+        {
+          "name": "动画",
+          "element_text": "动画",
+          "element_name": "tv.danmaku.bili:id/tab_title",
+          "coordinates": [
+            0.499,
+            0.12
+          ],
+          "is_selected": false
+        },
+        {
+          "name": "影视",
+          "element_text": "影视",
+          "element_name": "tv.danmaku.bili:id/tab_title",
+          "coordinates": [
+            0.63,
+            0.12
+          ],
+          "is_selected": false
+        },
+        {
+          "name": "新征程",
+          "element_text": "新征程",
+          "element_name": "tv.danmaku.bili:id/tab_title",
+          "coordinates": [
+            0.78,
+            0.12
+          ],
+          "is_selected": false
+        }
+      ],
+      "关注": [],
+      "发布内容": [],
+      "会员购": [
+        {
+          "name": "手办雕像",
+          "element_text": "手办雕像",
+          "element_name": "android.view.ViewGroup",
+          "coordinates": [
+            0.133,
+            0.191
+          ],
+          "is_selected": false
+        },
+        {
+          "name": "盲盒",
+          "element_text": "盲盒",
+          "element_name": "android.view.ViewGroup",
+          "coordinates": [
+            0.339,
+            0.191
+          ],
+          "is_selected": false
+        },
+        {
+          "name": "漫展演出",
+          "element_text": "漫展演出",
+          "element_name": "android.view.ViewGroup",
+          "coordinates": [
+            0.546,
+            0.191
+          ],
+          "is_selected": false
+        },
+        {
+          "name": "3C数码",
+          "element_text": "3C数码",
+          "element_name": "android.view.ViewGroup",
+          "coordinates": [
+            0.753,
+            0.191
+          ],
+          "is_selected": false
+        }
+      ],
+      "我的": []
+    }
+  },
+  "steps": [
+    {
+      "step": 1,
+      "action": "info",
+      "description": "发现弹窗，准备处理"
+    },
+    {
+      "step": 2,
+      "action": "close_popup",
+      "description": "关闭弹窗",
+      "target_text": "同意并继续",
+      "coordinates": [
+        0.5,
+        0.646
+      ],
+      "verify": {
+        "has_text": "同意并继续"
+      }
+    },
+    {
+      "step": 3,
+      "action": "info",
+      "description": "发现弹窗，准备处理"
+    },
+    {
+      "step": 4,
+      "action": "close_popup",
+      "description": "关闭弹窗",
+      "target_text": "始终允许",
+      "coordinates": [
+        0.695,
+        0.912
+      ],
+      "verify": {
+        "has_text": "始终允许"
+      }
+    },
+    {
+      "step": 5,
+      "action": "discover_l1",
+      "description": "发现L1菜单: ['首页', '关注', '发布内容', '会员购', '我的']"
+    },
+    {
+      "step": 6,
+      "action": "discover_l2",
+      "description": "L1'首页'的L2标签: ['直播', '推荐', '热门', '动画', '影视', '新征程']"
+    },
+    {
+      "step": 7,
+      "action": "click_l2",
+      "description": "点击L2: 首页-直播",
+      "target_text": "直播",
+      "target_name": "tv.danmaku.bili:id/tab_title",
+      "coordinates": [
+        0.101,
+        0.12
+      ],
+      "l1_name": "首页",
+      "verify": {
+        "has_all_text": [
+          "首页",
+          "直播"
+        ]
+      }
+    },
+    {
+      "step": 8,
+      "action": "check",
+      "description": "[功能正常] 首页-直播",
+      "target_text": "首页-直播",
+      "expected_result": "function_success"
+    },
+    {
+      "step": 9,
+      "action": "click_l2",
+      "description": "点击L2: 首页-推荐",
+      "target_text": "推荐",
+      "target_name": "tv.danmaku.bili:id/tab_title",
+      "coordinates": [
+        0.234,
+        0.12
+      ],
+      "l1_name": "首页",
+      "verify": {
+        "has_all_text": [
+          "首页",
+          "推荐"
+        ]
+      }
+    },
+    {
+      "step": 10,
+      "action": "check",
+      "description": "[功能正常] 首页-推荐",
+      "target_text": "首页-推荐",
+      "expected_result": "function_success"
+    },
+    {
+      "step": 11,
+      "action": "click_l2",
+      "description": "点击L2: 首页-热门",
+      "target_text": "热门",
+      "target_name": "tv.danmaku.bili:id/tab_title",
+      "coordinates": [
+        0.368,
+        0.12
+      ],
+      "l1_name": "首页",
+      "verify": {
+        "has_all_text": [
+          "首页",
+          "热门"
+        ]
+      }
+    },
+    {
+      "step": 12,
+      "action": "check",
+      "description": "[功能正常] 首页-热门",
+      "target_text": "首页-热门",
+      "expected_result": "function_success"
+    },
+    {
+      "step": 13,
+      "action": "click_l2",
+      "description": "点击L2: 首页-动画",
+      "target_text": "动画",
+      "target_name": "tv.danmaku.bili:id/tab_title",
+      "coordinates": [
+        0.499,
+        0.12
+      ],
+      "l1_name": "首页",
+      "verify": {
+        "has_all_text": [
+          "首页",
+          "动画"
+        ]
+      }
+    },
+    {
+      "step": 14,
+      "action": "check",
+      "description": "[功能正常] 首页-动画",
+      "target_text": "首页-动画",
+      "expected_result": "function_success"
+    },
+    {
+      "step": 15,
+      "action": "click_l2",
+      "description": "点击L2: 首页-影视",
+      "target_text": "影视",
+      "target_name": "tv.danmaku.bili:id/tab_title",
+      "coordinates": [
+        0.63,
+        0.12
+      ],
+      "l1_name": "首页",
+      "verify": {
+        "has_all_text": [
+          "首页",
+          "影视"
+        ]
+      }
+    },
+    {
+      "step": 16,
+      "action": "check",
+      "description": "[功能正常] 首页-影视",
+      "target_text": "首页-影视",
+      "expected_result": "function_success"
+    },
+    {
+      "step": 17,
+      "action": "click_l2",
+      "description": "点击L2: 首页-新征程",
+      "target_text": "新征程",
+      "target_name": "tv.danmaku.bili:id/tab_title",
+      "coordinates": [
+        0.78,
+        0.12
+      ],
+      "l1_name": "首页",
+      "verify": {
+        "has_all_text": [
+          "首页",
+          "新征程"
+        ]
+      }
+    },
+    {
+      "step": 18,
+      "action": "check",
+      "description": "[功能正常] 首页-新征程",
+      "target_text": "首页-新征程",
+      "expected_result": "function_success"
+    },
+    {
+      "step": 19,
+      "action": "click_l1",
+      "description": "切换L1: 关注",
+      "target_text": "关注",
+      "target_name": "tv.danmaku.bili:id/normal_ll",
+      "coordinates": [
+        0.3,
+        0.956
+      ],
+      "verify": {
+        "has_any_text": [
+          "首页",
+          "关注",
+          "发布内容",
+          "会员购",
+          "我的"
+        ]
+      }
+    },
+    {
+      "step": 20,
+      "action": "info",
+      "description": "发现弹窗，准备处理"
+    },
+    {
+      "step": 21,
+      "action": "close_popup",
+      "description": "关闭弹窗",
+      "target_text": "关闭",
+      "coordinates": [
+        0.805,
+        0.143
+      ],
+      "verify": {
+        "has_text": "关闭"
+      }
+    },
+    {
+      "step": 22,
+      "action": "discover_l2",
+      "description": "L1'关注'无L2标签"
+    },
+    {
+      "step": 23,
+      "action": "info",
+      "description": "L1'关注'无L2，准备检查阻断"
+    },
+    {
+      "step": 24,
+      "action": "check",
+      "description": "[L1功能正常] 关注",
+      "target_text": "关注",
+      "expected_result": "function_success"
+    },
+    {
+      "step": 25,
+      "action": "click_l1",
+      "description": "切换L1: 发布内容",
+      "target_name": "tv.danmaku.bili:id/publish_remote_iv",
+      "coordinates": [
+        0.5,
+        0.956
+      ],
+      "verify": {
+        "has_any_text": [
+          "首页",
+          "关注",
+          "发布内容",
+          "会员购",
+          "我的"
+        ]
+      }
+    },
+    {
+      "step": 26,
+      "action": "info",
+      "description": "发现弹窗，准备处理"
+    },
+    {
+      "step": 27,
+      "action": "close_popup",
+      "description": "关闭弹窗",
+      "target_text": "×",
+      "coordinates": [
+        0.805,
+        0.338
+      ]
+    },
+    {
+      "step": 28,
+      "action": "discover_l2",
+      "description": "L1'发布内容'无L2标签"
+    },
+    {
+      "step": 29,
+      "action": "info",
+      "description": "L1'发布内容'无L2，准备检查阻断"
+    },
+    {
+      "step": 30,
+      "action": "check",
+      "description": "[L1功能正常] 发布内容",
+      "target_text": "发布内容",
+      "expected_result": "function_success"
+    },
+    {
+      "step": 31,
+      "action": "click_l1",
+      "description": "切换L1: 会员购",
+      "target_text": "会员购",
+      "target_name": "tv.danmaku.bili:id/normal_ll",
+      "coordinates": [
+        0.7,
+        0.956
+      ],
+      "verify": {
+        "has_any_text": [
+          "首页",
+          "关注",
+          "发布内容",
+          "会员购",
+          "我的"
+        ]
+      }
+    },
+    {
+      "step": 32,
+      "action": "discover_l2",
+      "description": "L1'会员购'的L2标签: ['手办雕像', '盲盒', '漫展演出', '3C数码']"
+    },
+    {
+      "step": 33,
+      "action": "click_l2",
+      "description": "点击L2: 会员购-手办雕像",
+      "target_text": "手办雕像",
+      "target_name": "android.view.ViewGroup",
+      "coordinates": [
+        0.133,
+        0.191
+      ],
+      "l1_name": "会员购",
+      "verify": {
+        "has_all_text": [
+          "会员购",
+          "手办雕像"
+        ]
+      }
+    },
+    {
+      "step": 34,
+      "action": "check",
+      "description": "[功能正常] 会员购-手办雕像",
+      "target_text": "会员购-手办雕像",
+      "expected_result": "function_success"
+    },
+    {
+      "step": 35,
+      "action": "back",
+      "description": "返回L1页面(准备点击盲盒)"
+    },
+    {
+      "step": 36,
+      "action": "click_l2",
+      "description": "点击L2: 会员购-盲盒",
+      "target_text": "盲盒",
+      "target_name": "android.view.ViewGroup",
+      "coordinates": [
+        0.339,
+        0.191
+      ],
+      "l1_name": "会员购",
+      "verify": {
+        "has_all_text": [
+          "会员购",
+          "盲盒"
+        ]
+      }
+    },
+    {
+      "step": 37,
+      "action": "check",
+      "description": "[功能正常] 会员购-盲盒",
+      "target_text": "会员购-盲盒",
+      "expected_result": "function_success"
+    },
+    {
+      "step": 38,
+      "action": "back",
+      "description": "返回L1页面(准备点击漫展演出)"
+    },
+    {
+      "step": 39,
+      "action": "click_l2",
+      "description": "点击L2: 会员购-漫展演出",
+      "target_text": "漫展演出",
+      "target_name": "android.view.ViewGroup",
+      "coordinates": [
+        0.546,
+        0.191
+      ],
+      "l1_name": "会员购",
+      "verify": {
+        "has_all_text": [
+          "会员购",
+          "漫展演出"
+        ]
+      }
+    },
+    {
+      "step": 40,
+      "action": "info",
+      "description": "发现弹窗，准备处理"
+    },
+    {
+      "step": 41,
+      "action": "close_popup",
+      "description": "关闭弹窗",
+      "target_text": "仅在使用中允许",
+      "coordinates": [
+        0.5,
+        0.912
+      ],
+      "verify": {
+        "has_text": "仅在使用中允许"
+      }
+    },
+    {
+      "step": 42,
+      "action": "info",
+      "description": "发现弹窗，准备处理"
+    },
+    {
+      "step": 43,
+      "action": "close_popup",
+      "description": "关闭弹窗",
+      "target_text": "放弃",
+      "coordinates": [
+        0.29,
+        0.582
+      ],
+      "verify": {
+        "has_text": "放弃"
+      }
+    },
+    {
+      "step": 44,
+      "action": "check",
+      "description": "[功能正常] 会员购-漫展演出",
+      "target_text": "会员购-漫展演出",
+      "expected_result": "function_success"
+    },
+    {
+      "step": 45,
+      "action": "back",
+      "description": "返回L1页面(准备点击3C数码)"
+    },
+    {
+      "step": 46,
+      "action": "click_l2",
+      "description": "点击L2: 会员购-3C数码",
+      "target_text": "3C数码",
+      "target_name": "android.view.ViewGroup",
+      "coordinates": [
+        0.753,
+        0.191
+      ],
+      "l1_name": "会员购",
+      "verify": {
+        "has_all_text": [
+          "会员购",
+          "3C数码"
+        ]
+      }
+    },
+    {
+      "step": 47,
+      "action": "check",
+      "description": "[功能正常] 会员购-3C数码",
+      "target_text": "会员购-3C数码",
+      "expected_result": "function_success"
+    },
+    {
+      "step": 48,
+      "action": "back",
+      "description": "返回底部导航(准备切换L1:我的)"
+    },
+    {
+      "step": 49,
+      "action": "click_l1",
+      "description": "切换L1: 我的",
+      "target_text": "我的",
+      "target_name": "tv.danmaku.bili:id/normal_ll",
+      "coordinates": [
+        0.9,
+        0.956
+      ],
+      "verify": {
+        "has_any_text": [
+          "首页",
+          "关注",
+          "发布内容",
+          "会员购",
+          "我的"
+        ]
+      }
+    },
+    {
+      "step": 50,
+      "action": "info",
+      "description": "发现弹窗，准备处理"
+    },
+    {
+      "step": 51,
+      "action": "close_popup",
+      "description": "关闭弹窗",
+      "target_text": "关闭",
+      "coordinates": [
+        0.805,
+        0.143
+      ],
+      "verify": {
+        "has_text": "关闭"
+      }
+    },
+    {
+      "step": 52,
+      "action": "discover_l2",
+      "description": "L1'我的'无L2标签"
+    },
+    {
+      "step": 53,
+      "action": "info",
+      "description": "L1'我的'无L2，准备检查阻断"
+    },
+    {
+      "step": 54,
+      "action": "check",
+      "description": "[L1功能正常] 我的",
+      "target_text": "我的",
+      "expected_result": "function_success"
+    }
+  ]
+}

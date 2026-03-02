@@ -21,7 +21,8 @@ class DeviceDriver(object):
         self.poco = None
         self.device_info = device_info
         self.logdir = logdir
-        self.connect()
+        if not self.connect():
+            raise ConnectionError(f"设备连接失败: platform={device_info.get('platform')}, uuid={device_info.get('uuid')}")
 
     def connect(self) -> bool:
         """连接设备"""
@@ -31,7 +32,7 @@ class DeviceDriver(object):
                 self.poco = AndroidUiautomationPoco(self.driver)
                 return True
             except Exception as e:
-                logger.error("设备连接失败")
+                logger.error(f"设备连接失败: {e}")
         if self.device_info.get("platform") == "IOS":
             if self.device_info.get('uri'):
                 try:
@@ -39,14 +40,14 @@ class DeviceDriver(object):
                     self.poco = iosPoco(self.driver)
                     return True
                 except Exception as e:
-                    logger.error("设备连接失败")
+                    logger.error(f"设备连接失败: {e}")
             else:
                 try:
                     self.driver = init_device(platform="IOS", uuid=self.device_info.get("uuid"))
                     self.poco = iosPoco(self.driver)
                     return True
                 except Exception as e:
-                    logger.error("设备连接失败")
+                    logger.error(f"设备连接失败: {e}")
         return False
 
     def start_app(self, package: str):

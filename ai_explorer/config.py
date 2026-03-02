@@ -36,7 +36,7 @@ class ExplorationConfig:
     strategy: str = "priority_bfs"         # 探索策略：priority_bfs / bfs / dfs / random
     explore_depth: int = 10                # 最大导航深度
 
-    action_delay: float = 2.0             # 每次操作后等待时间（秒）
+    action_delay: float = 10.0             # 每次操作后等待时间（秒）
     screenshot_delay: float = 10.0         # 截图前等待时间（秒）
 
     similarity_threshold: float = 0.85    # 界面相似度阈值（用于去重）
@@ -93,6 +93,8 @@ class Config:
     # 运行参数
     output_dir: str = r"E:\tmp\explore"    # 输出根目录
     logdir: str = ""                        # 实际日志目录（运行时自动生成，无需手动设置）
+    replay_mode: str = "auto"              # auto=有playbook就replay / record=强制录制 / replay=强制回放
+    playbook_dir: str = ""                 # playbook目录（默认为项目根目录/playbooks）
 
     def build_router_info(self) -> dict:
         """根据配置构建路由器信息字典"""
@@ -129,6 +131,8 @@ class Config:
         cfg.login_method = login_data.get("method", "password")
         cfg.output_dir = data.get("output_dir", r"E:\tmp\explore")
         cfg.logdir = data.get("logdir", "")
+        cfg.replay_mode = data.get("replay_mode", "auto")
+        cfg.playbook_dir = data.get("playbook_dir", "")
         return cfg
 
     @classmethod

@@ -186,9 +186,20 @@ table.tbl{{width:100%;border-collapse:collapse;font-size:13px}}
 .bg-skip{{background:#f3f4f6;color:var(--t3)}}
 
 /* lightbox */
-.lb{{display:none;position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:9999;align-items:center;justify-content:center;cursor:zoom-out;backdrop-filter:blur(6px)}}
+.lb{{display:none;position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:9999;align-items:center;justify-content:center;backdrop-filter:blur(6px)}}
 .lb.on{{display:flex}}
-.lb img{{max-width:92vw;max-height:92vh;border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.5)}}
+.lb img{{max-width:85vw;max-height:88vh;border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.5);user-select:none}}
+.lb-btn{{position:fixed;top:50%;transform:translateY(-50%);width:48px;height:48px;border-radius:50%;
+  background:rgba(255,255,255,.15);border:none;color:#fff;font-size:24px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;transition:background .2s;z-index:10000}}
+.lb-btn:hover{{background:rgba(255,255,255,.3)}}
+.lb-prev{{left:16px}} .lb-next{{right:16px}}
+.lb-counter{{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);color:rgba(255,255,255,.7);
+  font-size:14px;z-index:10000;background:rgba(0,0,0,.4);padding:4px 14px;border-radius:20px}}
+.lb-close{{position:fixed;top:16px;right:16px;width:40px;height:40px;border-radius:50%;
+  background:rgba(255,255,255,.15);border:none;color:#fff;font-size:20px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;transition:background .2s;z-index:10000}}
+.lb-close:hover{{background:rgba(255,255,255,.3)}}
 
 /* footer */
 .ft{{text-align:center;font-size:12px;color:var(--t3);margin-top:28px;padding-top:18px;border-top:1px solid var(--bd)}}
@@ -231,10 +242,26 @@ table.tbl{{width:100%;border-collapse:collapse;font-size:13px}}
   <div class="ft">{mode_label}报告 &middot; AI 视觉模型驱动 &middot; {time.strftime('%Y-%m-%d %H:%M:%S')}</div>
 </div>
 
-<div class="lb" id="lb" onclick="this.classList.remove('on')"><img id="lb-img" src="" alt=""></div>
+<div class="lb" id="lb">
+  <button class="lb-close" onclick="closeLb()" title="关闭">&#10005;</button>
+  <button class="lb-btn lb-prev" onclick="navImg(-1)" title="上一张">&#10094;</button>
+  <img id="lb-img" src="" alt="">
+  <button class="lb-btn lb-next" onclick="navImg(1)" title="下一张">&#10095;</button>
+  <div class="lb-counter" id="lb-counter"></div>
+</div>
 <script>
-function showImg(s){{document.getElementById('lb-img').src=s;document.getElementById('lb').classList.add('on')}}
-document.addEventListener('keydown',function(e){{if(e.key==='Escape')document.getElementById('lb').classList.remove('on')}});
+var lbImgs=[],lbIdx=0;
+function initImgs(){{lbImgs=Array.from(document.querySelectorAll('[onclick^="showImg"]')).map(function(e){{return e.src||e.getAttribute('onclick').match(/'([^']+)'/)[1]}})}}
+function showImg(s){{if(!lbImgs.length)initImgs();lbIdx=lbImgs.indexOf(s);if(lbIdx<0)lbIdx=0;renderLb();document.getElementById('lb').classList.add('on')}}
+function navImg(d){{event.stopPropagation();lbIdx=(lbIdx+d+lbImgs.length)%lbImgs.length;renderLb()}}
+function renderLb(){{document.getElementById('lb-img').src=lbImgs[lbIdx];document.getElementById('lb-counter').textContent=(lbIdx+1)+' / '+lbImgs.length}}
+function closeLb(){{document.getElementById('lb').classList.remove('on')}}
+document.addEventListener('keydown',function(e){{
+  if(!document.getElementById('lb').classList.contains('on'))return;
+  if(e.key==='Escape')closeLb();
+  else if(e.key==='ArrowLeft')navImg(-1);
+  else if(e.key==='ArrowRight')navImg(1);
+}});
 document.querySelectorAll('.st-toggle').forEach(function(t){{
   t.addEventListener('click',function(){{this.classList.toggle('on');this.nextElementSibling.classList.toggle('on')}})
 }});
