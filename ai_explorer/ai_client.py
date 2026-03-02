@@ -166,18 +166,20 @@ class AIClient:
                 f"你刚刚点击了'{target_name}'进入了这个页面。\n"
                 f"请仔细检查：这个页面是否被阻断了（加载失败/没有数据/报错）？\n"
                 f"还是数据正常加载出来了？\n"
+                f"注意：不是所有应用都有L1/L2导航，不要因为看不到L1/L2就判定阻断失败。\n"
+                f"注意：如果除了弹窗之外页面主体进不去，只有“加载中”/转圈/空白/灰色占位，也应判定为阻断成功。\n"
                 f"注意：弹窗（权限/广告等）不算页面内容，忽略弹窗看底下的页面。\n\n"
                 f"## UI层级结构\n{ui_tree_text}"
             )
         return self._call_ai_raw(screenshot_path, system_prompt, user_prompt)
 
-    def analyze_login_screen(self, screenshot_path: str, ui_tree_text: str, login_method: str = "password") -> dict:
-        """调用AI分析登录界面，返回登录元素位置和操作步骤"""
+    def analyze_login_screen(self, screenshot_path: str, ui_tree_text: str, login_method: str = "password", actions_done_text: str = "") -> dict:
+        """调用AI分析登录界面，返回下一步操作"""
         system_prompt = get_login_system_prompt()
         user_prompt = (
-            f"分析当前截图中的登录界面。\n"
-            f"期望的登录方式: {login_method}（密码登录=password，验证码登录=sms）\n"
-            f"请识别所有登录相关的输入框、按钮位置，并给出操作步骤。\n\n"
+            f"分析当前截图中的登录界面，告诉我下一步该做什么。\n"
+            f"期望的登录方式: {login_method}（密码登录=password，验证码登录=sms）\n\n"
+            f"## 已完成的操作\n{actions_done_text or '  (暂无，这是第一步)'}\n\n"
             f"## UI层级结构\n{ui_tree_text}"
         )
         return self._call_ai_raw(screenshot_path, system_prompt, user_prompt)
