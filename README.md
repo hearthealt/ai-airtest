@@ -125,7 +125,6 @@ exploration:
   max_steps: 200                       # 最大步数
   max_duration_seconds: 1800           # 最大时长（秒）
   action_delay: 2.0                    # 每步操作后等待（秒）
-  screenshot_delay: 10.0               # 截图前等待（秒）
   max_errors: 10                       # 连续错误上限
 
 # 输出

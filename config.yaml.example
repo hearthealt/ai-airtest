@@ -46,7 +46,6 @@ exploration:
   max_consecutive_duplicates: 5
   max_errors: 10
   action_delay: 2.0
-  screenshot_delay: 10.0
   similarity_threshold: 0.85
 
 # 路由器阻断规则配置（仅 mode=0 时使用）

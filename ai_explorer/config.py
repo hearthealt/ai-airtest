@@ -37,7 +37,6 @@ class ExplorationConfig:
     explore_depth: int = 10                # 最大导航深度
 
     action_delay: float = 10.0             # 每次操作后等待时间（秒）
-    screenshot_delay: float = 10.0         # 截图前等待时间（秒）
 
     similarity_threshold: float = 0.85    # 界面相似度阈值（用于去重）
 

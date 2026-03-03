@@ -56,6 +56,9 @@ class ExplorationEngine:
         self.last_clicked_target = ""
         self.loading_retry_count = 0
         self.max_loading_retries = 2
+        self.l1_discover_retry_count = 0
+        self.max_l1_discover_retries = 1  # 第一次失败后只再试一次（共两次）
+        self.l1_discover_retry_wait_seconds = 30
 
         # 弹窗处理
         self._pending_popup_coords: Optional[tuple] = None
@@ -63,6 +66,8 @@ class ExplorationEngine:
         self._pending_popup_type: str = ""  # 弹窗类型: login/permission/ad/other
         self.popup_retry_count = 0
         self.max_popup_retries = 3
+        self.non_closable_overlay_retry_count = 0
+        self.max_non_closable_overlay_retries = 2
         self._onboarding_step_count = 0  # onboarding引导页操作计数
         self._max_onboarding_steps = 10  # onboarding最多操作次数，防止死循环
 
@@ -316,13 +321,24 @@ class ExplorationEngine:
         logger.info(f"[步骤{step_number}] 发现 {len(l1_items)} 个L1菜单: {l1_names}")
 
         if not l1_items:
-            logger.warning(f"[步骤{step_number}] 未发现L1菜单，转入口页状态检查")
+            if self.l1_discover_retry_count < self.max_l1_discover_retries:
+                self.l1_discover_retry_count += 1
+                wait_s = self.l1_discover_retry_wait_seconds
+                logger.warning(f"[步骤{step_number}] 首次未发现L1菜单，等待{wait_s}秒后进行第2次识别")
+                time.sleep(wait_s)
+                self.state = EngineState.DISCOVER_L1
+                return self._make_info_step(step_number, screenshot_path, elements, f"未发现L1菜单，等待{wait_s}秒后重试")
+
+            logger.warning(f"[步骤{step_number}] 第2次仍未发现L1菜单，转入口页状态检查")
+            self.l1_discover_retry_count = 0
             self.last_clicked_target = "入口页(无L1)"
             if self.last_clicked_target not in self.tested_controls:
                 self.tested_controls.append(self.last_clicked_target)
             self.loading_retry_count = 0
             self.state = EngineState.CHECK_L1_BLOCK
-            return self._make_info_step(step_number, screenshot_path, elements, "未发现L1菜单，转入口页状态检查")
+            return self._make_info_step(step_number, screenshot_path, elements, "第2次未发现L1菜单，转入口页状态检查")
+
+        self.l1_discover_retry_count = 0
 
         # 确保从第一个L1开始：如果第一个L1未选中，先点击它
         first_l1 = l1_items[0]
@@ -890,6 +906,7 @@ class ExplorationEngine:
     def _step_handle_popup(self, step_number: int) -> ExplorationStep:
         """处理弹窗：登录弹窗可转HANDLE_LOGIN，其他弹窗点关闭→缓存→返回之前状态"""
         if not self._pending_popup_coords:
+            self.non_closable_overlay_retry_count = 0
             self.state = self.previous_state or EngineState.DISCOVER_L1
             return self._make_info_step(step_number, "", [], "无弹窗坐标")
 
@@ -898,6 +915,7 @@ class ExplorationEngine:
             logger.info(f"[步骤{step_number}] 检测到登录弹窗，进入自动登录流程")
             self._login_actions_done = []
             self._login_retries = 0
+            self.non_closable_overlay_retry_count = 0
             self.state = EngineState.HANDLE_LOGIN
             # 清除弹窗信息（登录流程会自行处理）
             self._pending_popup_coords = None
@@ -920,10 +938,33 @@ class ExplorationEngine:
             self._pending_popup_coords = None
             self._pending_popup_text = ""
             self._pending_popup_type = ""
+            self.non_closable_overlay_retry_count = 0
             self.state = self.previous_state or EngineState.DISCOVER_L1
             self.previous_state = None
             time.sleep(self.config.exploration.action_delay)
             return self._make_info_step(step_number, "", [], "登录页面已关闭，不需要登录")
+
+        # 不可关闭的状态遮罩（如：业务处理中/加载中）不走“关闭弹窗”流程，直接等待并回到原状态
+        if self._is_non_closable_overlay(self._pending_popup_text, self._pending_popup_type):
+            self.non_closable_overlay_retry_count += 1
+            logger.info(
+                f"[步骤{step_number}] 检测到不可关闭状态层: '{self._pending_popup_text}'"
+                f" ({self.non_closable_overlay_retry_count}/{self.max_non_closable_overlay_retries})"
+            )
+
+            # mode=0阻断测试：长期卡在不可关闭状态层，按阻断成功处理并推进流程
+            if (self.config.mode == 0
+                    and self.non_closable_overlay_retry_count >= self.max_non_closable_overlay_retries):
+                return self._handle_stuck_non_closable_overlay_mode0(step_number)
+
+            self._pending_popup_coords = None
+            self._pending_popup_text = ""
+            self._pending_popup_type = ""
+            self.popup_retry_count = 0
+            self.state = self.previous_state or EngineState.DISCOVER_L1
+            self.previous_state = None
+            time.sleep(self.config.exploration.action_delay)
+            return self._make_info_step(step_number, "", [], "不可关闭状态层，等待后继续")
 
         # 点击前重新检查弹窗是否还存在（弹窗可能已自动消失）
         popup_text = self._pending_popup_text
@@ -985,6 +1026,7 @@ class ExplorationEngine:
             self._pending_popup_coords = None
             self._pending_popup_text = ""
             self._pending_popup_type = ""
+            self.non_closable_overlay_retry_count = 0
             self.state = self.previous_state or EngineState.DISCOVER_L1
             self.previous_state = None
             return self._make_info_step(step_number, "", current_elements,
@@ -1011,12 +1053,33 @@ class ExplorationEngine:
         )
         action_result = self.action_executor.execute(action)
 
+        if action_result == "success":
+            self.popup_retry_count = 0
+            self.non_closable_overlay_retry_count = 0
+        else:
+            self.popup_retry_count += 1
+            logger.warning(
+                f"[步骤{step_number}] 关闭弹窗失败({self.popup_retry_count}/{self.max_popup_retries}): '{popup_text}'"
+            )
+            if self.popup_retry_count >= self.max_popup_retries:
+                logger.warning(f"[步骤{step_number}] 弹窗连续关闭失败，按不可关闭状态层处理并继续")
+                self.popup_retry_count = 0
+                self._pending_popup_coords = None
+                self._pending_popup_text = ""
+                self._pending_popup_type = ""
+                self.non_closable_overlay_retry_count = 0
+                self.state = self.previous_state or EngineState.DISCOVER_L1
+                self.previous_state = None
+                time.sleep(self.config.exploration.action_delay)
+                return self._make_info_step(step_number, "", [], "弹窗连续关闭失败，按不可关闭状态层跳过")
+
         # onboarding弹窗需要多步操作（选性别→选年龄→下一步→...），
         # 点击后不清除弹窗状态，回到之前状态让AI重新识别，直到引导结束
         popup_type = self._pending_popup_type
         self._pending_popup_coords = None
         self._pending_popup_text = ""
         self._pending_popup_type = ""
+        self.non_closable_overlay_retry_count = 0
         self.state = self.previous_state or EngineState.DISCOVER_L1
         self.previous_state = None
 
@@ -1393,6 +1456,19 @@ class ExplorationEngine:
             self._back_retry_count = 0
             return None
 
+        # L1可见且至少1个L2可见（但不足2个）→ 也视为还在原页面，避免误判跳转
+        if l1_visible and l2_visible_count >= 1:
+            self._back_retry_count = 0
+            return None
+
+        # L1可见但L2一个都识别不到：最多只尝试一次返回，避免反复BACK死循环
+        if l1_visible and len(l2_list) > 1 and l2_visible_count == 0 and self._back_retry_count >= 1:
+            logger.info(
+                f"[步骤{step_number}] L1可见但L2未识别到（0/{len(l2_list)}），已尝试返回仍无变化，按未跳转处理并继续"
+            )
+            self._back_retry_count = 0
+            return None
+
         # 判定为跳转了新页面
         logger.info(f"[步骤{step_number}] 检测到页面跳转（L1可见={l1_visible}, L2可见={l2_visible_count}/{len(l2_list)}），返回L1页面")
         back_elem = self._find_back_button(elements)
@@ -1461,7 +1537,7 @@ class ExplorationEngine:
 
     def _capture_and_analyze(self, step_number: int):
         """通用：等待页面加载 + 截图 + 提取UI树。返回 (screenshot_path, elements, ui_tree_text)"""
-        time.sleep(self.config.exploration.screenshot_delay)
+        time.sleep(self.config.exploration.action_delay)
         screenshot_path = self.ui_analyzer.capture_screenshot(f"step{step_number}")
         if not screenshot_path:
             return "", [], ""
@@ -1556,6 +1632,76 @@ class ExplorationEngine:
             return best.center
 
         return coords
+
+    @staticmethod
+    def _is_non_closable_overlay(popup_text: str, popup_type: str) -> bool:
+        """判断是否为不可关闭的状态遮罩（业务处理中/加载中/请稍候等）。"""
+        if popup_type == "busy":
+            return True
+        text = (popup_text or "").strip()
+        if not text:
+            return False
+        keywords = (
+            "业务处理中", "处理中", "加载中", "正在加载", "请稍候", "提交中",
+            "请等待", "加载", "处理中...", "loading",
+        )
+        return any(k in text for k in keywords)
+
+    def _handle_stuck_non_closable_overlay_mode0(self, step_number: int) -> ExplorationStep:
+        """mode=0：不可关闭状态层持续出现时，按阻断成功处理并推进流程。"""
+        reason = "长时间业务处理中/加载中（不可关闭状态层）"
+        prev = self.previous_state
+        target = self.last_clicked_target or "入口页(无L1)"
+        self.last_clicked_target = target
+        if target not in self.tested_controls:
+            self.tested_controls.append(target)
+
+        self._pending_popup_coords = None
+        self._pending_popup_text = ""
+        self._pending_popup_type = ""
+        self.popup_retry_count = 0
+        self.non_closable_overlay_retry_count = 0
+
+        # L2检查上下文：按L2阻断成功处理
+        if prev in (EngineState.CHECK_BLOCK, EngineState.CHECK_BLOCK_LOADING):
+            logger.info(f"[步骤{step_number}] ✓ 阻断成功: '{target}' → {reason}")
+            self.loading_retry_count = 0
+            self._record_block_result(step_number, "block_success", reason, "")
+            self._update_current_menu_item("block_success", reason, "")
+            if not self.menu_structure.advance_l2():
+                self._advance_to_next_l1()
+            else:
+                self.state = EngineState.TEST_L2
+            self.previous_state = None
+            return ExplorationStep(
+                step_number=step_number, timestamp=time.time(),
+                screenshot_path="",
+                screen_description=f"[阻断成功] {target}（持续处理中）",
+                ui_tree_summary="",
+                action_taken=AIDecision(action=ActionType.WAIT, priority=Priority.HIGH, reasoning="持续不可关闭状态层=阻断成功"),
+                action_result="block_success", screen_fingerprint="",
+            )
+
+        # 其他上下文（L1直测/入口页）：按L1阻断成功处理
+        logger.info(f"[步骤{step_number}] ✓ L1阻断成功: '{target}' → {reason}")
+        self._record_block_result(step_number, "block_success", reason, "")
+        l1 = self.menu_structure.current_l1()
+        if l1:
+            l1.status = "block_success"
+            l1.block_result = reason
+            l1.screenshot_path = ""
+            self._advance_to_next_l1()
+        else:
+            self.state = EngineState.COMPLETE
+        self.previous_state = None
+        return ExplorationStep(
+            step_number=step_number, timestamp=time.time(),
+            screenshot_path="",
+            screen_description=f"[L1阻断成功] {target}（持续处理中）",
+            ui_tree_summary="",
+            action_taken=AIDecision(action=ActionType.WAIT, priority=Priority.HIGH, reasoning="持续不可关闭状态层=阻断成功"),
+            action_result="block_success", screen_fingerprint="",
+        )
 
     @staticmethod
     def _make_info_step(step_number, screenshot_path, elements, description):
@@ -1826,7 +1972,7 @@ class ExplorationEngine:
     # ==================== Playbook 回放辅助 ====================
 
     def _replay_screenshot(self, step_number: int) -> str:
-        """回放时轻量截图（不等screenshot_delay，不提取UI树）"""
+        """回放时轻量截图（不等action_delay，不提取UI树）"""
         try:
             return self.ui_analyzer.capture_screenshot(f"step{step_number}") or ""
         except Exception:
