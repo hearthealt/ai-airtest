@@ -1395,31 +1395,32 @@ class ExplorationEngine:
         else:
             search_keywords = [target]
 
-        for keyword in search_keywords:
-            # 对复选框类元素，优先用desc匹配可点击的元素
-            if use_desc_first:
-                try:
-                    elem = poco(descMatches=f".*{keyword}.*", touchable=True)
-                    if elem.exists():
-                        pos = elem.get_position()
-                        size = elem.get_size()
-                        # 复选框点击左侧勾选区域，避免命中文字中的超链接（如"服务协议"/"隐私政策"）
-                        left_x = max(0.02, pos[0] - size[0] * 0.5 + 0.02)
-                        logger.info(f"  -> 登录Poco desc匹配(复选框): '{keyword}' → ({left_x:.3f}, {pos[1]:.3f})")
-                        return (left_x, pos[1])
-                except Exception:
-                    pass
+        # 复选框：找到协议相关文字确定Y坐标，X用固定小值点击左侧图标区域
+        if use_desc_first:
+            CHECKBOX_X = fallback[0]  # 使用AI识别的复选框X坐标
+            for keyword in search_keywords:
+                for match_fn in [
+                    lambda kw: poco(descMatches=f".*{kw}.*"),
+                    lambda kw: poco(text=kw),
+                    lambda kw: poco(textMatches=f".*{kw}.*"),
+                ]:
+                    try:
+                        elem = match_fn(keyword)
+                        if elem.exists():
+                            target_y = elem.get_position()[1]
+                            logger.info(f"  -> 登录复选框: 匹配'{keyword}' Y={target_y:.3f}, 点击左侧X={CHECKBOX_X}")
+                            return (CHECKBOX_X, target_y)
+                    except Exception:
+                        pass
+            logger.info(f"  -> 登录复选框: Poco未匹配，使用AI坐标{fallback}")
+            return fallback
 
+        for keyword in search_keywords:
             try:
                 # 精确文本匹配
                 elem = poco(text=keyword)
                 if elem.exists():
                     pos = elem.get_position()
-                    if use_desc_first:
-                        size = elem.get_size()
-                        left_x = max(0.02, pos[0] - size[0] * 0.5 + 0.02)
-                        logger.info(f"  -> 登录Poco匹配(复选框): text='{keyword}' → ({left_x:.3f}, {pos[1]:.3f})")
-                        return (left_x, pos[1])
                     logger.info(f"  -> 登录Poco匹配: text='{keyword}' → ({pos[0]:.3f}, {pos[1]:.3f})")
                     return (pos[0], pos[1])
             except Exception:
@@ -1429,26 +1430,8 @@ class ExplorationEngine:
                 elem = poco(textMatches=f".*{keyword}.*")
                 if elem.exists():
                     pos = elem.get_position()
-                    if use_desc_first:
-                        size = elem.get_size()
-                        left_x = max(0.02, pos[0] - size[0] * 0.5 + 0.02)
-                        logger.info(f"  -> 登录Poco模糊匹配(复选框): '{keyword}' → ({left_x:.3f}, {pos[1]:.3f})")
-                        return (left_x, pos[1])
                     logger.info(f"  -> 登录Poco模糊匹配: '{keyword}' → ({pos[0]:.3f}, {pos[1]:.3f})")
                     return (pos[0], pos[1])
-            except Exception:
-                pass
-
-        # 复选框专用兜底：直接用控件类型CheckBox查找
-        if use_desc_first:
-            try:
-                elem = poco(type="android.widget.CheckBox")
-                if elem.exists():
-                    pos = elem.get_position()
-                    size = elem.get_size()
-                    left_x = max(0.02, pos[0] - size[0] * 0.5 + 0.02)
-                    logger.info(f"  -> 登录Poco CheckBox类型匹配 → ({left_x:.3f}, {pos[1]:.3f})")
-                    return (left_x, pos[1])
             except Exception:
                 pass
 
