@@ -10,10 +10,11 @@ mode: 0
 
 # 登录配置（可选，遇到登录界面时自动登录）
 login:
-  required: false                # 是否需要登录
-  phone: ""                      # 登录手机号
-  password: ""                   # 登录密码
-  method: "password"             # password=密码登录, sms=验证码登录
+  required: true                # 是否需要登录
+  phone: "17358607087"          # 登录手机号
+  email: ""                     # 登录邮箱
+  password: "Test1735860"       # 登录密码
+  method: "password"            # password=密码登录, sms=验证码登录, email=邮箱登录
 
 # 设备连接配置
 device:

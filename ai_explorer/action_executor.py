@@ -186,7 +186,7 @@ class ActionExecutor:
         direction = direction_map.get(action, "up")
 
         try:
-            self.dd.swipe(0.5, 0.5, direction, 500)
+            self.dd.swipe(direction=direction, duration=1)
             return "success"
         except Exception as e:
             pass

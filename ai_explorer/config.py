@@ -87,8 +87,9 @@ class Config:
     # 登录配置
     login_required: bool = False            # 是否需要登录（True=遇到登录界面自动登录）
     login_phone: str = ""                   # 登录手机号
+    login_email: str = ""                   # 登录邮箱
     login_password: str = ""                # 登录密码（密码登录时用）
-    login_method: str = "password"          # password=密码登录, sms=验证码登录
+    login_method: str = "password"          # password=密码登录, sms=验证码登录, email=邮箱登录
 
     # 运行参数
     output_dir: str = r"E:\tmp\explore"    # 输出根目录
@@ -127,6 +128,7 @@ class Config:
         login_data = data.get("login") or {}
         cfg.login_required = login_data.get("required", False)
         cfg.login_phone = login_data.get("phone", "")
+        cfg.login_email = login_data.get("email", "")
         cfg.login_password = login_data.get("password", "")
         cfg.login_method = login_data.get("method", "password")
         cfg.output_dir = data.get("output_dir", r"E:\tmp\explore")

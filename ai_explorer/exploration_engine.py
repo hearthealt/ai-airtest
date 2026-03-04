@@ -1001,6 +1001,39 @@ class ExplorationEngine:
             time.sleep(self.config.exploration.action_delay)
             return self._make_info_step(step_number, "", [], "不可关闭状态层，等待后继续")
 
+        # onboarding轮播引导页：AI返回swipe_left，直接左滑，跳过弹窗存在性检查
+        if self._pending_popup_text == "swipe_left":
+            logger.info(f"[步骤{step_number}] onboarding轮播引导页，执行左滑翻页")
+            action = AIDecision(
+                action=ActionType.SWIPE,
+                swipe_direction="left",
+                is_popup=True,
+                priority=Priority.HIGH,
+                reasoning="onboarding轮播引导页，左滑翻页",
+            )
+            action_result = self.action_executor.execute(action)
+
+            popup_type = self._pending_popup_type
+            self._pending_popup_coords = None
+            self._pending_popup_text = ""
+            self._pending_popup_type = ""
+            self.non_closable_overlay_retry_count = 0
+            self.state = self.previous_state or EngineState.DISCOVER_L1
+            self.previous_state = None
+
+            self._onboarding_step_count += 1
+            if self._onboarding_step_count >= self._max_onboarding_steps:
+                logger.warning(f"[步骤{step_number}] onboarding引导页操作已达{self._max_onboarding_steps}次上限，强制跳过")
+                self._onboarding_step_count = 0
+
+            time.sleep(self.config.exploration.action_delay)
+            return ExplorationStep(
+                step_number=step_number, timestamp=time.time(),
+                screenshot_path="", screen_description="引导页左滑翻页",
+                ui_tree_summary="", action_taken=action,
+                action_result=action_result, screen_fingerprint="",
+            )
+
         # 点击前重新检查弹窗是否还存在（弹窗可能已自动消失）
         popup_text = self._pending_popup_text
         popup_still_exists = False
@@ -1200,6 +1233,9 @@ class ExplorationEngine:
             if "手机" in target or "账号" in target or "phone" in target.lower():
                 input_text = self.config.login_phone
                 desc = "输入手机号"
+            elif "邮箱" in target or "email" in target.lower() or "mail" in target.lower():
+                input_text = self.config.login_email
+                desc = "输入邮箱"
             elif "密码" in target or "password" in target.lower():
                 input_text = self.config.login_password
                 desc = "输入密码"
