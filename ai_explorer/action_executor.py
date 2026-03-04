@@ -233,11 +233,9 @@ class ActionExecutor:
             time.sleep(0.8)
 
         try:
-            self.dd.text(text, enter=False)
-            logger.info(f"  -> 文本输入完成: '{text[:3]}***'({len(text)}字符)")
+            self.dd.driver.shell(f"input text {text}")
             return "success"
         except Exception as e:
-            logger.error(f"文本输入失败: {e}")
             return "error"
 
     def _do_back(self) -> str:
