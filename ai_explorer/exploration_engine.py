@@ -404,6 +404,41 @@ class ExplorationEngine:
                     is_selected=is_selected,
                 ))
 
+        # 按配置限制每个L1测试的L2数量（0=不限制）
+        max_l2_per_l1 = max(0, int(getattr(self.config.exploration, "max_l2_per_l1", 0)))
+        if max_l2_per_l1 > 0 and len(l2_items) > max_l2_per_l1:
+            original_count = len(l2_items)
+            l2_items = l2_items[:max_l2_per_l1]
+            logger.info(
+                f"[步骤{step_number}] L1'{l1.name}'按配置仅保留前{max_l2_per_l1}个L2"
+                f"（原{original_count}个）"
+            )
+
+        # ======== L2去重校验：防止弹窗关闭后回到错误L1导致重复测试 ========
+        if l2_items:
+            curr_l2_names = {i.name for i in l2_items}
+            for prev_l1_name, prev_l2_list in self.menu_structure.l2_map.items():
+                if prev_l1_name == l1.name:
+                    continue
+                prev_l2_names = {i.name for i in prev_l2_list}
+                if not prev_l2_names:
+                    continue
+                if curr_l2_names == prev_l2_names:
+                    logger.warning(
+                        f"[步骤{step_number}] L1'{l1.name}'的L2与已测L1'{prev_l1_name}'"
+                        f"完全相同({curr_l2_names})，判定页面未正确切换，跳过L2直接检查L1"
+                    )
+                    self.last_clicked_target = l1.name
+                    if l1.name not in self.tested_controls:
+                        self.tested_controls.append(l1.name)
+                    self.loading_retry_count = 0
+                    self.state = EngineState.CHECK_L1_BLOCK
+                    return self._make_info_step(
+                        step_number, screenshot_path, elements,
+                        f"L2与已测L1'{prev_l1_name}'重复，跳过L2直接检查L1"
+                    )
+        # ======== L2去重校验结束 ========
+
         self.menu_structure.l2_map[l1.name] = l2_items
         self.menu_structure.current_l2_index = 0
 

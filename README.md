@@ -125,6 +125,7 @@ exploration:
   max_steps: 200                       # 最大步数
   max_duration_seconds: 1800           # 最大时长（秒）
   action_delay: 2.0                    # 每步操作后等待（秒）
+  max_l2_per_l1: 0                     # 每个L1最多测几个L2，0=不限制，1=只测1个
   max_errors: 10                       # 连续错误上限
 
 # 输出

@@ -1,0 +1,510 @@
+{
+  "app_package": "com.ss.android.ugc.aweme",
+  "mode": 0,
+  "mode_label": "阻断测试",
+  "version": 1,
+  "menu_structure": {
+    "l1_items": [
+      {
+        "name": "首页",
+        "element_text": "首页",
+        "element_name": "com.ss.android.ugc.aweme:id/0tp",
+        "coordinates": [
+          0.1,
+          0.951
+        ]
+      },
+      {
+        "name": "朋友",
+        "element_text": "朋友",
+        "element_name": "com.ss.android.ugc.aweme:id/0tp",
+        "coordinates": [
+          0.3,
+          0.951
+        ]
+      },
+      {
+        "name": "拍摄",
+        "element_text": "拍摄",
+        "element_name": "com.ss.android.ugc.aweme:id/1p9",
+        "coordinates": [
+          0.5,
+          0.95
+        ]
+      },
+      {
+        "name": "消息",
+        "element_text": "消息",
+        "element_name": "com.ss.android.ugc.aweme:id/0tp",
+        "coordinates": [
+          0.7,
+          0.951
+        ]
+      },
+      {
+        "name": "我",
+        "element_text": "我",
+        "element_name": "com.ss.android.ugc.aweme:id/0tp",
+        "coordinates": [
+          0.9,
+          0.951
+        ]
+      }
+    ],
+    "l2_map": {
+      "首页": [
+        {
+          "name": "精选",
+          "element_text": "精选",
+          "element_name": "com.ss.android.ugc.aweme:id/5ko",
+          "coordinates": [
+            0.126,
+            0.063
+          ],
+          "is_selected": false
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "step": 1,
+      "action": "discover_l1",
+      "description": "发现L1菜单: ['首页', '朋友', '拍摄', '消息', '我']"
+    },
+    {
+      "step": 2,
+      "action": "discover_l2",
+      "description": "L1'首页'的L2标签: ['精选']"
+    },
+    {
+      "step": 3,
+      "action": "click_l2",
+      "description": "点击L2: 首页-精选",
+      "target_text": "精选",
+      "target_name": "com.ss.android.ugc.aweme:id/5ko",
+      "coordinates": [
+        0.126,
+        0.063
+      ],
+      "l1_name": "首页",
+      "verify": {
+        "has_all_text": [
+          "首页",
+          "精选"
+        ]
+      }
+    },
+    {
+      "step": 4,
+      "action": "info",
+      "description": "发现弹窗，准备处理"
+    },
+    {
+      "step": 5,
+      "action": "close_popup",
+      "description": "关闭弹窗",
+      "target_text": "同意",
+      "coordinates": [
+        0.5,
+        0.698
+      ],
+      "verify": {
+        "has_text": "同意"
+      }
+    },
+    {
+      "step": 6,
+      "action": "info",
+      "description": "发现弹窗，准备处理"
+    },
+    {
+      "step": 7,
+      "action": "close_popup",
+      "description": "关闭弹窗",
+      "target_text": "始终允许",
+      "coordinates": [
+        0.695,
+        0.912
+      ],
+      "verify": {
+        "has_text": "始终允许"
+      }
+    },
+    {
+      "step": 8,
+      "action": "check",
+      "description": "[阻断成功] 首页-精选",
+      "target_text": "首页-精选",
+      "expected_result": "block_success"
+    },
+    {
+      "step": 9,
+      "action": "click_l1",
+      "description": "切换L1: 朋友",
+      "target_text": "朋友",
+      "target_name": "com.ss.android.ugc.aweme:id/0tp",
+      "coordinates": [
+        0.3,
+        0.951
+      ],
+      "verify": {
+        "has_any_text": [
+          "首页",
+          "朋友",
+          "拍摄",
+          "消息",
+          "我"
+        ]
+      }
+    },
+    {
+      "step": 10,
+      "action": "info",
+      "description": "发现弹窗，准备处理"
+    },
+    {
+      "step": 11,
+      "action": "info",
+      "description": "登录页面已关闭，不需要登录"
+    },
+    {
+      "step": 12,
+      "action": "click_l1",
+      "description": "L2与已测L1'首页'重复，重试切换L1(1/2)",
+      "target_text": "朋友",
+      "target_name": "com.ss.android.ugc.aweme:id/0tp",
+      "coordinates": [
+        0.3,
+        0.951
+      ],
+      "verify": {
+        "has_any_text": [
+          "首页",
+          "朋友",
+          "拍摄",
+          "消息",
+          "我"
+        ]
+      }
+    },
+    {
+      "step": 13,
+      "action": "click_l1",
+      "description": "切换L1: 朋友",
+      "target_text": "朋友",
+      "target_name": "com.ss.android.ugc.aweme:id/0tp",
+      "coordinates": [
+        0.3,
+        0.951
+      ],
+      "verify": {
+        "has_any_text": [
+          "首页",
+          "朋友",
+          "拍摄",
+          "消息",
+          "我"
+        ]
+      }
+    },
+    {
+      "step": 14,
+      "action": "info",
+      "description": "发现弹窗，准备处理"
+    },
+    {
+      "step": 15,
+      "action": "info",
+      "description": "登录页面已关闭，不需要登录"
+    },
+    {
+      "step": 16,
+      "action": "info",
+      "description": "L2与已测L1'首页'重复2次，跳过L2直接检查L1"
+    },
+    {
+      "step": 17,
+      "action": "check",
+      "description": "[L1阻断成功] 朋友",
+      "target_text": "朋友",
+      "expected_result": "block_success"
+    },
+    {
+      "step": 18,
+      "action": "click_l1",
+      "description": "切换L1: 拍摄",
+      "target_text": "拍摄",
+      "target_name": "com.ss.android.ugc.aweme:id/1p9",
+      "coordinates": [
+        0.5,
+        0.95
+      ],
+      "verify": {
+        "has_any_text": [
+          "首页",
+          "朋友",
+          "拍摄",
+          "消息",
+          "我"
+        ]
+      }
+    },
+    {
+      "step": 19,
+      "action": "info",
+      "description": "发现弹窗，准备处理"
+    },
+    {
+      "step": 20,
+      "action": "info",
+      "description": "登录页面已关闭，不需要登录"
+    },
+    {
+      "step": 21,
+      "action": "click_l1",
+      "description": "L2与已测L1'首页'重复，重试切换L1(1/2)",
+      "target_text": "拍摄",
+      "target_name": "com.ss.android.ugc.aweme:id/1p9",
+      "coordinates": [
+        0.5,
+        0.95
+      ],
+      "verify": {
+        "has_any_text": [
+          "首页",
+          "朋友",
+          "拍摄",
+          "消息",
+          "我"
+        ]
+      }
+    },
+    {
+      "step": 22,
+      "action": "click_l1",
+      "description": "切换L1: 拍摄",
+      "target_text": "拍摄",
+      "target_name": "com.ss.android.ugc.aweme:id/1p9",
+      "coordinates": [
+        0.5,
+        0.95
+      ],
+      "verify": {
+        "has_any_text": [
+          "首页",
+          "朋友",
+          "拍摄",
+          "消息",
+          "我"
+        ]
+      }
+    },
+    {
+      "step": 23,
+      "action": "info",
+      "description": "发现弹窗，准备处理"
+    },
+    {
+      "step": 24,
+      "action": "info",
+      "description": "登录页面已关闭，不需要登录"
+    },
+    {
+      "step": 25,
+      "action": "info",
+      "description": "L2与已测L1'首页'重复2次，跳过L2直接检查L1"
+    },
+    {
+      "step": 26,
+      "action": "check",
+      "description": "[L1阻断成功] 拍摄",
+      "target_text": "拍摄",
+      "expected_result": "block_success"
+    },
+    {
+      "step": 27,
+      "action": "click_l1",
+      "description": "切换L1: 消息",
+      "target_text": "消息",
+      "target_name": "com.ss.android.ugc.aweme:id/0tp",
+      "coordinates": [
+        0.7,
+        0.951
+      ],
+      "verify": {
+        "has_any_text": [
+          "首页",
+          "朋友",
+          "拍摄",
+          "消息",
+          "我"
+        ]
+      }
+    },
+    {
+      "step": 28,
+      "action": "info",
+      "description": "发现弹窗，准备处理"
+    },
+    {
+      "step": 29,
+      "action": "info",
+      "description": "登录页面已关闭，不需要登录"
+    },
+    {
+      "step": 30,
+      "action": "click_l1",
+      "description": "L2与已测L1'首页'重复，重试切换L1(1/2)",
+      "target_text": "消息",
+      "target_name": "com.ss.android.ugc.aweme:id/0tp",
+      "coordinates": [
+        0.7,
+        0.951
+      ],
+      "verify": {
+        "has_any_text": [
+          "首页",
+          "朋友",
+          "拍摄",
+          "消息",
+          "我"
+        ]
+      }
+    },
+    {
+      "step": 31,
+      "action": "click_l1",
+      "description": "切换L1: 消息",
+      "target_text": "消息",
+      "target_name": "com.ss.android.ugc.aweme:id/0tp",
+      "coordinates": [
+        0.7,
+        0.951
+      ],
+      "verify": {
+        "has_any_text": [
+          "首页",
+          "朋友",
+          "拍摄",
+          "消息",
+          "我"
+        ]
+      }
+    },
+    {
+      "step": 32,
+      "action": "info",
+      "description": "发现弹窗，准备处理"
+    },
+    {
+      "step": 33,
+      "action": "info",
+      "description": "登录页面已关闭，不需要登录"
+    },
+    {
+      "step": 34,
+      "action": "info",
+      "description": "L2与已测L1'首页'重复2次，跳过L2直接检查L1"
+    },
+    {
+      "step": 35,
+      "action": "check",
+      "description": "[L1阻断成功] 消息",
+      "target_text": "消息",
+      "expected_result": "block_success"
+    },
+    {
+      "step": 36,
+      "action": "click_l1",
+      "description": "切换L1: 我",
+      "target_text": "我",
+      "target_name": "com.ss.android.ugc.aweme:id/0tp",
+      "coordinates": [
+        0.9,
+        0.951
+      ],
+      "verify": {
+        "has_any_text": [
+          "首页",
+          "朋友",
+          "拍摄",
+          "消息",
+          "我"
+        ]
+      }
+    },
+    {
+      "step": 37,
+      "action": "info",
+      "description": "发现弹窗，准备处理"
+    },
+    {
+      "step": 38,
+      "action": "info",
+      "description": "登录页面已关闭，不需要登录"
+    },
+    {
+      "step": 39,
+      "action": "click_l1",
+      "description": "L2与已测L1'首页'重复，重试切换L1(1/2)",
+      "target_text": "我",
+      "target_name": "com.ss.android.ugc.aweme:id/0tp",
+      "coordinates": [
+        0.9,
+        0.951
+      ],
+      "verify": {
+        "has_any_text": [
+          "首页",
+          "朋友",
+          "拍摄",
+          "消息",
+          "我"
+        ]
+      }
+    },
+    {
+      "step": 40,
+      "action": "click_l1",
+      "description": "切换L1: 我",
+      "target_text": "我",
+      "target_name": "com.ss.android.ugc.aweme:id/0tp",
+      "coordinates": [
+        0.9,
+        0.951
+      ],
+      "verify": {
+        "has_any_text": [
+          "首页",
+          "朋友",
+          "拍摄",
+          "消息",
+          "我"
+        ]
+      }
+    },
+    {
+      "step": 41,
+      "action": "info",
+      "description": "发现弹窗，准备处理"
+    },
+    {
+      "step": 42,
+      "action": "info",
+      "description": "登录页面已关闭，不需要登录"
+    },
+    {
+      "step": 43,
+      "action": "info",
+      "description": "L2与已测L1'首页'重复2次，跳过L2直接检查L1"
+    },
+    {
+      "step": 44,
+      "action": "check",
+      "description": "[L1阻断成功] 我",
+      "target_text": "我",
+      "expected_result": "block_success"
+    }
+  ]
+}

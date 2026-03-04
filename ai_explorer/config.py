@@ -37,6 +37,7 @@ class ExplorationConfig:
     explore_depth: int = 10                # 最大导航深度
 
     action_delay: float = 10.0             # 每次操作后等待时间（秒）
+    max_l2_per_l1: int = 0                 # 每个L1最多测试多少个L2，0表示不限制
 
     similarity_threshold: float = 0.85    # 界面相似度阈值（用于去重）
 

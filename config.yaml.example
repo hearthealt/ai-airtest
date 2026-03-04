@@ -46,6 +46,7 @@ exploration:
   max_consecutive_duplicates: 5
   max_errors: 10
   action_delay: 2.0
+  max_l2_per_l1: 0               # 每个L1最多测试几个L2；0=不限制，1=只测1个
   similarity_threshold: 0.85
 
 # 路由器阻断规则配置（仅 mode=0 时使用）
