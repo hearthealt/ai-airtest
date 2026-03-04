@@ -1,6 +1,7 @@
 # -*- encoding=utf8 -*-
 """核心探索引擎：结构化L1→L2导航阻断测试状态机。"""
 
+import re
 import time
 import logging
 from typing import List, Dict, Optional
@@ -945,9 +946,16 @@ class ExplorationEngine:
             self.state = self.previous_state or EngineState.DISCOVER_L1
             return self._make_info_step(step_number, "", [], "无弹窗坐标")
 
+        # 登录弹窗判断：popup_type=="login" 或按钮文字含"登录"（AI有时未正确设置popup_type）
+        _is_login_popup = (
+            self._pending_popup_type == "login"
+            or (self._pending_popup_text and "登录" in self._pending_popup_text
+                and self._pending_popup_text not in ("关闭", "×", "X", "x", "<", "←", "返回"))
+        )
+
         # 登录弹窗：如果配置了需要登录，则转入登录流程
-        if self._pending_popup_type == "login" and self.config.login_required:
-            logger.info(f"[步骤{step_number}] 检测到登录弹窗，进入自动登录流程")
+        if _is_login_popup and self.config.login_required:
+            logger.info(f"[步骤{step_number}] 检测到登录弹窗(type={self._pending_popup_type}, text='{self._pending_popup_text}')，进入自动登录流程")
             self._login_actions_done = []
             self._login_retries = 0
             self.non_closable_overlay_retry_count = 0
@@ -960,7 +968,7 @@ class ExplorationEngine:
 
         # 登录页面不需要登录：直接用坐标点击返回/关闭按钮，跳过弹窗存在性检查
         # （登录页是全屏页面，不会自动消失，Poco也很难匹配到返回按钮）
-        if self._pending_popup_type == "login" and not self.config.login_required:
+        if _is_login_popup and not self.config.login_required:
             logger.info(f"[步骤{step_number}] 登录页面(不需要登录)，直接点击返回/关闭: '{self._pending_popup_text}'")
             action = AIDecision(
                 action=ActionType.CLICK,
@@ -1048,7 +1056,18 @@ class ExplorationEngine:
                     popup_still_exists = True
                     logger.info(f"  -> 弹窗检查: Poco文本匹配到'{popup_text}'，弹窗仍在")
                 else:
-                    logger.info(f"  -> 弹窗检查: Poco文本未匹配到'{popup_text}'")
+                    # 去空格模糊匹配（处理"准 备 好 啦！"这类字间有空格的文本）
+                    normalized = popup_text.replace(" ", "").replace("\u3000", "")
+                    if normalized and len(normalized) >= 2:
+                        pattern = r"\s*".join(re.escape(c) for c in normalized)
+                        elem2 = poco(textMatches=pattern)
+                        if elem2.exists():
+                            popup_still_exists = True
+                            logger.info(f"  -> 弹窗检查: Poco文本模糊匹配到'{popup_text}'，弹窗仍在")
+                        else:
+                            logger.info(f"  -> 弹窗检查: Poco文本未匹配到'{popup_text}'")
+                    else:
+                        logger.info(f"  -> 弹窗检查: Poco文本未匹配到'{popup_text}'")
             except Exception as e:
                 logger.info(f"  -> 弹窗检查: Poco文本查找异常: {e}")
 
@@ -1070,14 +1089,45 @@ class ExplorationEngine:
         # 方式3：用UI树文本匹配兜底
         if not popup_still_exists and popup_text:
             current_elements = self.ui_analyzer.extract_ui_tree()
+            normalized_popup = popup_text.replace(" ", "").replace("\u3000", "")
             if current_elements:
+                # 第一轮：全等匹配（最精确）
                 for el in current_elements:
-                    if (popup_text in (el.text or "")
-                            or popup_text in (el.name or "")
-                            or popup_text in (el.desc or "")):
+                    el_text = el.text or ""
+                    el_name = el.name or ""
+                    el_desc = el.desc or ""
+                    if popup_text == el_text or popup_text == el_name or popup_text == el_desc:
                         popup_still_exists = True
-                        logger.info(f"  -> 弹窗检查: UI树匹配到'{popup_text}' (text='{el.text}', name='{el.name}', desc='{el.desc}')")
+                        logger.info(f"  -> 弹窗检查: UI树全等匹配到'{popup_text}' (text='{el_text}', name='{el_name}', desc='{el_desc}')")
                         break
+                # 第二轮：子串匹配（排除反义：如搜"同意"不应匹配"不同意"）
+                if not popup_still_exists:
+                    _neg_prefixes = ("不", "没", "未", "非", "别", "勿")
+                    for el in current_elements:
+                        el_text = el.text or ""
+                        el_name = el.name or ""
+                        el_desc = el.desc or ""
+                        for field in (el_text, el_name, el_desc):
+                            if popup_text in field:
+                                # 检查popup_text前面是否紧跟否定词
+                                idx = field.find(popup_text)
+                                if idx > 0 and field[idx - 1] in _neg_prefixes:
+                                    continue  # "不同意"包含"同意"但是反义，跳过
+                                popup_still_exists = True
+                                logger.info(f"  -> 弹窗检查: UI树匹配到'{popup_text}' (text='{el_text}', name='{el_name}', desc='{el_desc}')")
+                                break
+                        if popup_still_exists:
+                            break
+                # 第三轮：去空格模糊匹配
+                if not popup_still_exists and normalized_popup and len(normalized_popup) >= 2:
+                    for el in current_elements:
+                        el_text = (el.text or "").replace(" ", "").replace("\u3000", "")
+                        el_name = (el.name or "").replace(" ", "").replace("\u3000", "")
+                        el_desc = (el.desc or "").replace(" ", "").replace("\u3000", "")
+                        if normalized_popup in el_text or normalized_popup in el_name or normalized_popup in el_desc:
+                            popup_still_exists = True
+                            logger.info(f"  -> 弹窗检查: UI树模糊匹配到'{popup_text}' (text='{el.text}', name='{el.name}', desc='{el.desc}')")
+                            break
                 if not popup_still_exists:
                     logger.info(f"  -> 弹窗检查: UI树{len(current_elements)}个元素均未匹配到'{popup_text}'")
             else:
@@ -1209,18 +1259,32 @@ class ExplorationEngine:
 
         next_action = analysis.get("next_action")
         if not next_action:
-            return self._login_fail(step_number, "AI未返回操作步骤")
+            return self._login_fail(step_number, "AI未返回操作步骤", screenshot_path)
 
         action_type = next_action.get("action", "click")
         coords = next_action.get("coordinates")
         target = next_action.get("target", "")
         reasoning = next_action.get("reasoning", "")
 
+        # 检测登录操作是否卡在同一步骤（如阻断时"获取验证码"一直失败）
+        if action_type == "click" and target and len(self._login_actions_done) >= 2:
+            # 提取最近的操作target关键词，去掉坐标部分比对
+            recent_targets = []
+            for a in self._login_actions_done[-2:]:
+                if a.startswith("点击'"):
+                    # "点击'获取验证码按钮' → (0.50, 0.39)" → "获取验证码按钮"
+                    t = a.split("'")[1] if "'" in a else ""
+                    recent_targets.append(t)
+            # 连续2次都是点击同一个target，当前又是第3次
+            if len(recent_targets) == 2 and recent_targets[0] == recent_targets[1] == target:
+                logger.warning(f"[步骤{step_number}] 登录操作卡住：连续3次点击'{target}'无进展，退出登录")
+                return self._login_fail(step_number, f"连续点击'{target}'无进展（可能网络阻断导致无法获取验证码）", screenshot_path)
+
         # done = AI认为登录操作已完成（如已点击登录按钮），等待验证
         if action_type == "done":
             self._login_retries += 1
             if self._login_retries >= self.max_login_retries:
-                return self._login_fail(step_number, "多次验证后仍在登录界面")
+                return self._login_fail(step_number, "多次验证后仍在登录界面", screenshot_path)
             logger.info(f"[步骤{step_number}] AI认为登录完成，等待验证...")
             self._login_actions_done.append(f"等待登录验证({self._login_retries}/{self.max_login_retries})")
             time.sleep(self.config.exploration.action_delay * 2)
@@ -1323,8 +1387,8 @@ class ExplorationEngine:
             search_keywords = ["请输入密码", "密码", "password"]
         elif "登录" in target and "按钮" in target:
             search_keywords = ["登录", "登 录", "login", "Login"]
-        elif "同意" in target or "协议" in target or "复选" in target or "勾选" in target:
-            search_keywords = ["同意", "未选中", "已阅读"]
+        elif "同意" in target or "协议" in target or "复选" in target or "勾选" in target or "隐私" in target:
+            search_keywords = ["同意", "已阅读", "服务协议", "隐私政策", "隐私"]
             use_desc_first = True  # 复选框通常text为空，desc有内容如"未选中，同意"
         elif "跳过" in target:
             search_keywords = ["跳过", "skip"]
@@ -1338,8 +1402,11 @@ class ExplorationEngine:
                     elem = poco(descMatches=f".*{keyword}.*", touchable=True)
                     if elem.exists():
                         pos = elem.get_position()
-                        logger.info(f"  -> 登录Poco desc匹配: '{keyword}' → ({pos[0]:.3f}, {pos[1]:.3f})")
-                        return (pos[0], pos[1])
+                        size = elem.get_size()
+                        # 复选框点击左侧勾选区域，避免命中文字中的超链接（如"服务协议"/"隐私政策"）
+                        left_x = max(0.02, pos[0] - size[0] * 0.5 + 0.02)
+                        logger.info(f"  -> 登录Poco desc匹配(复选框): '{keyword}' → ({left_x:.3f}, {pos[1]:.3f})")
+                        return (left_x, pos[1])
                 except Exception:
                     pass
 
@@ -1348,6 +1415,11 @@ class ExplorationEngine:
                 elem = poco(text=keyword)
                 if elem.exists():
                     pos = elem.get_position()
+                    if use_desc_first:
+                        size = elem.get_size()
+                        left_x = max(0.02, pos[0] - size[0] * 0.5 + 0.02)
+                        logger.info(f"  -> 登录Poco匹配(复选框): text='{keyword}' → ({left_x:.3f}, {pos[1]:.3f})")
+                        return (left_x, pos[1])
                     logger.info(f"  -> 登录Poco匹配: text='{keyword}' → ({pos[0]:.3f}, {pos[1]:.3f})")
                     return (pos[0], pos[1])
             except Exception:
@@ -1357,21 +1429,53 @@ class ExplorationEngine:
                 elem = poco(textMatches=f".*{keyword}.*")
                 if elem.exists():
                     pos = elem.get_position()
+                    if use_desc_first:
+                        size = elem.get_size()
+                        left_x = max(0.02, pos[0] - size[0] * 0.5 + 0.02)
+                        logger.info(f"  -> 登录Poco模糊匹配(复选框): '{keyword}' → ({left_x:.3f}, {pos[1]:.3f})")
+                        return (left_x, pos[1])
                     logger.info(f"  -> 登录Poco模糊匹配: '{keyword}' → ({pos[0]:.3f}, {pos[1]:.3f})")
                     return (pos[0], pos[1])
+            except Exception:
+                pass
+
+        # 复选框专用兜底：直接用控件类型CheckBox查找
+        if use_desc_first:
+            try:
+                elem = poco(type="android.widget.CheckBox")
+                if elem.exists():
+                    pos = elem.get_position()
+                    size = elem.get_size()
+                    left_x = max(0.02, pos[0] - size[0] * 0.5 + 0.02)
+                    logger.info(f"  -> 登录Poco CheckBox类型匹配 → ({left_x:.3f}, {pos[1]:.3f})")
+                    return (left_x, pos[1])
             except Exception:
                 pass
 
         logger.info(f"  -> 登录Poco未匹配到'{target}'，使用AI坐标{fallback}")
         return fallback
 
-    def _login_fail(self, step_number: int, reason: str) -> ExplorationStep:
-        """登录失败：回退到之前的状态"""
+    def _login_fail(self, step_number: int, reason: str, screenshot_path: str = "") -> ExplorationStep:
+        """登录失败：阻断模式下视为阻断成功并结束，功能模式下回退继续"""
         logger.warning(f"[步骤{step_number}] 自动登录失败: {reason}")
+        self._login_actions_done = []
+
+        # 阻断模式(mode=0)：登录失败=网络阻断生效，无法登录=阻断成功
+        if self.config.mode == 0:
+            self.last_clicked_target = "登录页面"
+            if "登录页面" not in self.tested_controls:
+                self.tested_controls.append("登录页面")
+            logger.info(f"[步骤{step_number}] ✓ 阻断成功: 登录失败（{reason}）→ 阻断生效，结束探索")
+            self._record_block_result(step_number, "block_success", f"登录失败: {reason}", screenshot_path)
+            self.state = EngineState.COMPLETE
+            self.previous_state = None
+            return self._make_info_step(step_number, screenshot_path, [],
+                                        f"[阻断成功] 登录失败: {reason}")
+
+        # 功能模式(mode=1)：回退到之前的状态继续
         self.state = self.previous_state or EngineState.DISCOVER_L1
         self.previous_state = None
-        self._login_actions_done = []
-        return self._make_info_step(step_number, "", [], f"登录失败: {reason}")
+        return self._make_info_step(step_number, screenshot_path, [], f"登录失败: {reason}")
 
     def _login_close_or_skip(self, step_number, analysis, screenshot_path, elements):
         """登录界面无可执行步骤时，尝试关闭/游客登录/跳过"""
@@ -1410,7 +1514,7 @@ class ExplorationEngine:
             self._login_actions_done = []
             return self._make_info_step(step_number, screenshot_path, elements, "关闭登录弹窗")
 
-        return self._login_fail(step_number, "无可执行的登录步骤")
+        return self._login_fail(step_number, "无可执行的登录步骤", screenshot_path)
 
     # ==================== 辅助方法 ====================
 

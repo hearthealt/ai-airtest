@@ -1,6 +1,7 @@
 # -*- encoding=utf8 -*-
 """操作执行器：将AI决策映射为Airtest/Poco操作。"""
 
+import re
 import time
 import logging
 
@@ -82,6 +83,15 @@ class ActionExecutor:
                     elem.click()
                     logger.info(f"  -> Poco文本匹配点击: text='{el.text}'")
                     return "success"
+                # 去空格模糊匹配（处理"准 备 好 啦！"这类字间有空格的文本）
+                normalized = el.text.replace(" ", "").replace("\u3000", "")
+                if normalized and len(normalized) >= 2:
+                    pattern = r"\s*".join(re.escape(c) for c in normalized)
+                    elem2 = poco(textMatches=pattern)
+                    if elem2.exists():
+                        elem2.click()
+                        logger.info(f"  -> Poco文本模糊匹配点击: text='{el.text}'")
+                        return "success"
             except Exception as e:
                 pass
 
@@ -220,10 +230,11 @@ class ActionExecutor:
             click_result = self._do_click(decision)
             if click_result != "success":
                 logger.warning("输入前点击输入框失败")
-            time.sleep(0.5)
+            time.sleep(0.8)
 
         try:
             self.dd.text(text, enter=False)
+            logger.info(f"  -> 文本输入完成: '{text[:3]}***'({len(text)}字符)")
             return "success"
         except Exception as e:
             logger.error(f"文本输入失败: {e}")

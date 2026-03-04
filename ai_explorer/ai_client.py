@@ -178,7 +178,7 @@ class AIClient:
         system_prompt = get_login_system_prompt()
         user_prompt = (
             f"分析当前截图中的登录界面，告诉我下一步该做什么。\n"
-            f"期望的登录方式: {login_method}（密码登录=password，验证码登录=sms）\n\n"
+            f"期望的登录方式: {login_method}（密码登录=password，验证码登录=sms，邮箱登录=email）\n\n"
             f"## 已完成的操作\n{actions_done_text or '  (暂无，这是第一步)'}\n\n"
             f"## UI层级结构\n{ui_tree_text}"
         )
