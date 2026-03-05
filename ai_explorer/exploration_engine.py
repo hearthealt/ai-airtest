@@ -302,6 +302,7 @@ class ExplorationEngine:
             self._pending_popup_coords = self._refine_popup_coords(raw_coords, elements)
             self._pending_popup_text = btn.get("text", "关闭")
             self._pending_popup_type = result.get("popup_type", "other")
+            logger.info(f"[步骤{step_number}] 发现弹窗: text='{self._pending_popup_text}', popup_type='{self._pending_popup_type}'")
             return self._make_info_step(step_number, screenshot_path, elements, "发现弹窗，准备处理")
 
         # 解析L1菜单项
@@ -1021,7 +1022,6 @@ class ExplorationEngine:
             )
             action_result = self.action_executor.execute(action)
 
-            popup_type = self._pending_popup_type
             self._pending_popup_coords = None
             self._pending_popup_text = ""
             self._pending_popup_type = ""
@@ -1149,6 +1149,15 @@ class ExplorationEngine:
             self.previous_state = None
             return self._make_info_step(step_number, "", current_elements,
                                         f"弹窗'{popup_text}'已自动消失，跳过关闭")
+
+        # agreement弹窗：先勾选"已阅读"复选框（可能有多个），再点"同意"
+        # AI可能未正确返回agreement类型，通过弹窗文字兜底判断
+        popup_text_lower = popup_text.lower()
+        is_agreement = self._pending_popup_type == "agreement" or any(
+            kw in popup_text_lower for kw in ["同意", "协议", "隐私", "agreement", "privacy", "policy"]
+        )
+        if is_agreement:
+            self._click_agreement_checkboxes(step_number)
 
         logger.info(f"[步骤{step_number}] 关闭弹窗: '{popup_text}'")
 
@@ -1362,6 +1371,38 @@ class ExplorationEngine:
             ),
             action_result="success", screen_fingerprint="",
         )
+
+    def _click_agreement_checkboxes(self, step_number: int) -> None:
+        """agreement弹窗中，调用AI识别并勾选所有未选中的"已阅读并同意"复选框。"""
+        # 截图 + 提取UI树
+        screenshot_path = self.ui_analyzer.capture_screenshot(f"step{step_number}_agreement")
+        if not screenshot_path:
+            logger.warning(f"[步骤{step_number}] agreement复选框: 截图失败，跳过")
+            return
+
+        elements = self.ui_analyzer.extract_ui_tree()
+        ui_tree_text = self.ui_analyzer.format_ui_tree_text(elements) if elements else ""
+
+        # 调用AI识别复选框
+        result = self.ai_client.find_agreement_checkboxes(screenshot_path, ui_tree_text)
+        checkboxes = result.get("checkboxes", [])
+
+        if not checkboxes:
+            logger.info(f"[步骤{step_number}] agreement复选框: AI未识别到需要勾选的复选框")
+            return
+
+        for i, cb in enumerate(checkboxes):
+            coords = cb.get("coordinates", [])
+            text = cb.get("text", "")
+            if not coords or len(coords) < 2:
+                continue
+            click_x, click_y = float(coords[0]), float(coords[1])
+            logger.info(f"[步骤{step_number}] agreement弹窗: 勾选复选框'{text}' → ({click_x:.3f}, {click_y:.3f})")
+            self.dd.poco.click([click_x, click_y])
+            time.sleep(self.config.exploration.action_delay)
+
+        # 勾选完复选框后等待UI响应，再点"同意"按钮
+        time.sleep(self.config.exploration.action_delay)
 
     def _login_find_element(self, target: str, ai_coords) -> tuple:
         """登录时用Poco精确查找元素坐标，找不到就用AI坐标兜底。"""

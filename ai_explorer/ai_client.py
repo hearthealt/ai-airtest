@@ -20,7 +20,7 @@ from .prompts import (
     get_system_prompt, get_user_prompt,
     get_discover_l1_system_prompt, get_discover_l2_system_prompt,
     get_block_check_system_prompt, get_function_check_system_prompt,
-    get_login_system_prompt,
+    get_login_system_prompt, get_agreement_checkbox_prompt,
 )
 
 logger = logging.getLogger(__name__)
@@ -180,6 +180,15 @@ class AIClient:
             f"分析当前截图中的登录界面，告诉我下一步该做什么。\n"
             f"期望的登录方式: {login_method}（密码登录=password，验证码登录=sms，邮箱登录=email）\n\n"
             f"## 已完成的操作\n{actions_done_text or '  (暂无，这是第一步)'}\n\n"
+            f"## UI层级结构\n{ui_tree_text}"
+        )
+        return self._call_ai_raw(screenshot_path, system_prompt, user_prompt)
+
+    def find_agreement_checkboxes(self, screenshot_path: str, ui_tree_text: str) -> dict:
+        """调用AI识别隐私协议弹窗中需要勾选的复选框，返回坐标列表"""
+        system_prompt = get_agreement_checkbox_prompt()
+        user_prompt = (
+            f"分析当前截图中的隐私政策/用户协议弹窗，找出所有需要勾选的'已阅读'复选框的坐标。\n\n"
             f"## UI层级结构\n{ui_tree_text}"
         )
         return self._call_ai_raw(screenshot_path, system_prompt, user_prompt)
