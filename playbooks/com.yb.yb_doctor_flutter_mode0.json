@@ -1,0 +1,52 @@
+{
+  "app_package": "com.yb.yb_doctor_flutter",
+  "mode": 0,
+  "mode_label": "阻断测试",
+  "version": 1,
+  "menu_structure": {
+    "l1_items": [],
+    "l2_map": {}
+  },
+  "steps": [
+    {
+      "step": 1,
+      "action": "info",
+      "description": "发现弹窗，准备处理"
+    },
+    {
+      "step": 2,
+      "action": "info",
+      "description": "登录弹窗，转入自动登录"
+    },
+    {
+      "step": 3,
+      "action": "info",
+      "description": "登录: 立即登录按钮"
+    },
+    {
+      "step": 4,
+      "action": "info",
+      "description": "登录操作完成，等待验证(1/3)"
+    },
+    {
+      "step": 5,
+      "action": "info",
+      "description": "登录: 立即登录按钮"
+    },
+    {
+      "step": 6,
+      "action": "info",
+      "description": "登录操作完成，等待验证(2/3)"
+    },
+    {
+      "step": 7,
+      "action": "info",
+      "description": "登录: 立即登录按钮"
+    },
+    {
+      "step": 8,
+      "action": "info",
+      "description": "[阻断成功] 登录失败: 多次验证后仍在登录界面"
+    }
+  ]
+}

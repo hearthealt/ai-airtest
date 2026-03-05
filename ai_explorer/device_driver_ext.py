@@ -98,17 +98,26 @@ class AIDeviceDriver:
         ui_text = ui.format_ui_tree_text(elements)
 
         client = AIClient(self.config.ai)
-        response = client.analyze_screen(
+        result = client.test_call(
             screenshot_path=screenshot,
             ui_tree_text=ui_text,
-            exploration_context=f"用户想要点击: {description}",
-            explored_elements=[],
+            target=description,
+            mode=self.config.mode,
+            history="",
         )
 
-        if response.recommended_actions:
-            executor = ActionExecutor(self.dd, self.config.exploration)
-            result = executor.execute(response.recommended_actions[0])
-            return result == "success"
+        if result and result.get("type") == "action":
+            coords = result.get("coordinates")
+            if coords:
+                from .models import AIDecision, ActionType, Priority
+                decision = AIDecision(
+                    action=ActionType.CLICK,
+                    coordinates=tuple(coords),
+                    priority=Priority.HIGH,
+                    reasoning=f"ai_click: {description}",
+                )
+                executor = ActionExecutor(self.dd, self.config.exploration)
+                return executor.execute(decision) == "success"
         return False
 
     def ai_assert(self, description: str) -> bool:
@@ -129,10 +138,13 @@ class AIDeviceDriver:
         ui_text = ui.format_ui_tree_text(elements)
 
         client = AIClient(self.config.ai)
-        response = client.analyze_screen(
+        result = client.test_call(
             screenshot_path=screenshot,
             ui_tree_text=ui_text,
-            exploration_context=f"断言检查: 验证当前界面是否满足 '{description}'",
-            explored_elements=[],
+            target=description,
+            mode=self.config.mode,
+            history="",
         )
-        return not response.is_error_screen
+        if result and result.get("type") == "page_status":
+            return result.get("status") == "loaded"
+        return False

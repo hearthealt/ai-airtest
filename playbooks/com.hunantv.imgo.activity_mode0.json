@@ -1,0 +1,300 @@
+{
+  "app_package": "com.hunantv.imgo.activity",
+  "mode": 0,
+  "mode_label": "阻断测试",
+  "version": 1,
+  "menu_structure": {
+    "l1_items": [
+      {
+        "name": "首页",
+        "element_text": "首页",
+        "element_name": "com.hunantv.imgo.activity:id/tvTabName",
+        "coordinates": [
+          0.1,
+          0.96
+        ]
+      },
+      {
+        "name": "免费",
+        "element_text": "免费",
+        "element_name": "com.hunantv.imgo.activity:id/tvTabName",
+        "coordinates": [
+          0.3,
+          0.96
+        ]
+      },
+      {
+        "name": "会员",
+        "element_text": "会员",
+        "element_name": "com.hunantv.imgo.activity:id/tvTabName",
+        "coordinates": [
+          0.5,
+          0.96
+        ]
+      },
+      {
+        "name": "周边",
+        "element_text": "周边",
+        "element_name": "com.hunantv.imgo.activity:id/tvTabName",
+        "coordinates": [
+          0.7,
+          0.96
+        ]
+      },
+      {
+        "name": "我的",
+        "element_text": "我的",
+        "element_name": "com.hunantv.imgo.activity:id/tvTabName",
+        "coordinates": [
+          0.9,
+          0.96
+        ]
+      }
+    ],
+    "l2_map": {
+      "首页": [
+        {
+          "name": "首页",
+          "element_text": "首页",
+          "element_name": "com.hunantv.imgo.activity:id/tvTabName",
+          "coordinates": [
+            0.1,
+            0.11
+          ],
+          "is_selected": true
+        }
+      ],
+      "免费": [],
+      "会员": [
+        {
+          "name": "精选",
+          "element_text": "精选",
+          "element_name": "android.widget.TextView",
+          "coordinates": [
+            0.081,
+            0.062
+          ],
+          "is_selected": true
+        }
+      ],
+      "周边": [],
+      "我的": []
+    }
+  },
+  "steps": [
+    {
+      "step": 1,
+      "action": "info",
+      "description": "发现弹窗，准备处理"
+    },
+    {
+      "step": 2,
+      "action": "close_popup",
+      "description": "关闭弹窗",
+      "target_text": "同意并继续",
+      "coordinates": [
+        0.739,
+        0.904
+      ],
+      "verify": {
+        "has_text": "同意并继续"
+      }
+    },
+    {
+      "step": 3,
+      "action": "discover_l1",
+      "description": "发现L1菜单: ['首页', '免费', '会员', '周边', '我的']"
+    },
+    {
+      "step": 4,
+      "action": "discover_l2",
+      "description": "L1'首页'的L2标签: ['首页']"
+    },
+    {
+      "step": 5,
+      "action": "click_l2",
+      "description": "点击L2: 首页-首页",
+      "target_text": "首页",
+      "target_name": "com.hunantv.imgo.activity:id/tvTabName",
+      "coordinates": [
+        0.1,
+        0.11
+      ],
+      "l1_name": "首页",
+      "verify": {
+        "has_all_text": [
+          "首页",
+          "首页"
+        ]
+      }
+    },
+    {
+      "step": 6,
+      "action": "check",
+      "description": "[阻断成功] 首页-首页",
+      "target_text": "首页-首页",
+      "expected_result": "block_success"
+    },
+    {
+      "step": 7,
+      "action": "click_l1",
+      "description": "切换L1: 免费",
+      "target_text": "免费",
+      "target_name": "com.hunantv.imgo.activity:id/tvTabName",
+      "coordinates": [
+        0.3,
+        0.96
+      ],
+      "verify": {
+        "has_any_text": [
+          "首页",
+          "免费",
+          "会员",
+          "周边",
+          "我的"
+        ]
+      }
+    },
+    {
+      "step": 8,
+      "action": "discover_l2",
+      "description": "L1'免费'无L2标签"
+    },
+    {
+      "step": 9,
+      "action": "info",
+      "description": "L1'免费'无L2，准备检查阻断"
+    },
+    {
+      "step": 10,
+      "action": "check",
+      "description": "[L1阻断成功] 免费",
+      "target_text": "免费",
+      "expected_result": "block_success"
+    },
+    {
+      "step": 11,
+      "action": "click_l1",
+      "description": "切换L1: 会员",
+      "target_text": "会员",
+      "target_name": "com.hunantv.imgo.activity:id/tvTabName",
+      "coordinates": [
+        0.5,
+        0.96
+      ],
+      "verify": {
+        "has_any_text": [
+          "首页",
+          "免费",
+          "会员",
+          "周边",
+          "我的"
+        ]
+      }
+    },
+    {
+      "step": 12,
+      "action": "discover_l2",
+      "description": "L1'会员'的L2标签: ['精选']"
+    },
+    {
+      "step": 13,
+      "action": "click_l2",
+      "description": "点击L2: 会员-精选",
+      "target_text": "精选",
+      "target_name": "android.widget.TextView",
+      "coordinates": [
+        0.081,
+        0.062
+      ],
+      "l1_name": "会员",
+      "verify": {
+        "has_all_text": [
+          "会员",
+          "精选"
+        ]
+      }
+    },
+    {
+      "step": 14,
+      "action": "check",
+      "description": "[阻断成功] 会员-精选",
+      "target_text": "会员-精选",
+      "expected_result": "block_success"
+    },
+    {
+      "step": 15,
+      "action": "click_l1",
+      "description": "切换L1: 周边",
+      "target_text": "周边",
+      "target_name": "com.hunantv.imgo.activity:id/tvTabName",
+      "coordinates": [
+        0.7,
+        0.96
+      ],
+      "verify": {
+        "has_any_text": [
+          "首页",
+          "免费",
+          "会员",
+          "周边",
+          "我的"
+        ]
+      }
+    },
+    {
+      "step": 16,
+      "action": "discover_l2",
+      "description": "L1'周边'无L2标签"
+    },
+    {
+      "step": 17,
+      "action": "info",
+      "description": "L1'周边'无L2，准备检查阻断"
+    },
+    {
+      "step": 18,
+      "action": "check",
+      "description": "[L1阻断成功] 周边",
+      "target_text": "周边",
+      "expected_result": "block_success"
+    },
+    {
+      "step": 19,
+      "action": "click_l1",
+      "description": "切换L1: 我的",
+      "target_text": "我的",
+      "target_name": "com.hunantv.imgo.activity:id/tvTabName",
+      "coordinates": [
+        0.9,
+        0.96
+      ],
+      "verify": {
+        "has_any_text": [
+          "首页",
+          "免费",
+          "会员",
+          "周边",
+          "我的"
+        ]
+      }
+    },
+    {
+      "step": 20,
+      "action": "discover_l2",
+      "description": "L1'我的'无L2标签"
+    },
+    {
+      "step": 21,
+      "action": "info",
+      "description": "L1'我的'无L2，准备检查阻断"
+    },
+    {
+      "step": 22,
+      "action": "check",
+      "description": "[L1阻断成功] 我的",
+      "target_text": "我的",
+      "expected_result": "block_success"
+    }
+  ]
+}

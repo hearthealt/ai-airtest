@@ -4,7 +4,7 @@
 
 ## 核心功能
 
-- **结构化导航遍历**：状态机驱动，按 L1(底部导航) → L2(顶部Tab) 的层级逐个点击测试
+- **结构化导航遍历**：三阶段统一AI循环（发现菜单 → 逐项测试 → 完成），按 L1(底部导航) → L2(顶部Tab) 的层级稳定执行
 - **双模式测试**：mode=0 阻断测试（验证页面是否被成功阻断），mode=1 功能测试（验证页面是否正常加载）
 - **AI视觉判断**：截图 + Poco UI树同时送入AI模型，判断页面状态（阻断成功/失败/加载中）
 - **智能弹窗处理**：自动识别并关闭遮挡导航控件的弹窗，忽略不影响操作的小广告
@@ -13,35 +13,49 @@
 - **自动登录**（可选）：遇到登录界面时，AI识别输入框和按钮位置，自动填写凭据完成登录
 - **HTML/JSON报告**：自包含HTML报告，内嵌截图，支持点击放大查看
 
-## 状态机流程
+## 执行流程（Unified AI Loop）
 
-```
-DISCOVER_L1  ──→  DISCOVER_L2  ──→  TEST_L2  ──→  CHECK_BLOCK
-  识别底部导航        识别顶部Tab       点击L2         检查页面状态
-       │                  │               │               │
-       │                  │               │         ┌─────┴─────┐
-       │                  │               │    阻断成功     阻断失败
-       │                  │               │    记录结果     记录结果
-       │                  │               │         └─────┬─────┘
-       │                  │               │               │
-       │                  │          还有下一个L2?  ←──────┘
-       │                  │          是 → 回到TEST_L2
-       │                  │          否 → SWITCH_L1
-       │                  │                    │
-       │                  │               还有下一个L1?
-       │                  │               是 → 回到DISCOVER_L2
-       │                  │               否 → COMPLETE
-       │                  │
-       ↓                  ↓
-  HANDLE_POPUP ←── 任何步骤检测到遮挡弹窗时进入
-  HANDLE_LOGIN ←── 检测到登录弹窗且login_required=true时进入
-```
+当前代码在 `exploration_engine.py` 中采用“模式选择 + 三阶段循环”：
+
+~~~text
+run()
+  ├─ replay_mode=auto: 有 playbook -> replay；否则 -> record
+  ├─ replay_mode=replay: _run_replay()
+  └─ replay_mode=record: _run_record()
+
+_run_record()
+  1) DISCOVER 阶段（_discover_phase）
+     - AI discover_call 在循环中二选一返回：
+       - action: 处理弹窗/登录/引导/导航动作（执行后继续循环）
+       - menu_found: 返回当前 L1 + L2 结构
+     - 若仍有 L1 未发现 L2：自动切换到该 L1 继续 discover
+  2) TEST 阶段（_test_phase）
+     - 按发现结果确定性遍历：L1 -> L2（无 L2 则直接测 L1）
+     - 每个目标进入 _check_page_loop：
+       - AI test_call 返回 action：先执行（弹窗、登录、返回等）再重试判断
+       - 返回 page_status=blocked/loaded/loading：
+         - loading 连续重试，超限后按 mode 记为失败
+         - blocked/loaded 立即记结果
+  3) COMPLETE
+     - 保存 menu_structure 到 playbook
+     - 输出 ExplorationResult，后续生成 HTML/JSON 报告
+
+_run_replay()
+  - 加载 playbook 步骤回放（click/check/back 等）
+  - check 步骤仍调用 AI 复判页面状态
+  - 回放异常时自动降级到 record 路径继续完成
+~~~
+
+全局终止条件（任一满足即停止）：
+- `max_steps`
+- `max_duration_seconds`
+- `max_errors`（连续错误上限）
 
 ## 项目结构
 
 ```
 ai_explorer/
-├── exploration_engine.py   # 核心状态机引擎（L1→L2遍历、弹窗处理、页面跳转检测）
+├── exploration_engine.py   # 统一AI循环引擎（discover/test/replay 主流程、菜单遍历、弹窗与登录处理）
 ├── ai_client.py            # AI视觉模型客户端（OpenAI兼容API，截图+UI树→JSON响应）
 ├── action_executor.py      # 操作执行器（多级降级点击、滑动、文本输入、返回）
 ├── ui_analyzer.py          # UI分析器（Poco UI树提取、截图捕获、元素格式化）

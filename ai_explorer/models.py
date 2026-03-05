@@ -218,7 +218,7 @@ class ExplorationResult:
 # ==================== 结构化L1→L2导航相关 ====================
 
 class EngineState(Enum):
-    """探索引擎状态机"""
+    """探索引擎状态机（旧版，保留供回放兼容）"""
     DISCOVER_L1 = "discover_l1"
     DISCOVER_L2 = "discover_l2"
     TEST_L2 = "test_l2"
@@ -230,6 +230,13 @@ class EngineState(Enum):
     TEST_L1_DIRECT = "test_l1_direct"
     CHECK_L1_BLOCK = "check_l1_block"
     COMPLETE = "complete"
+
+
+class Phase(Enum):
+    """探索引擎阶段（新版统一AI循环）"""
+    DISCOVER = "discover"    # 发现菜单结构
+    TEST = "test"            # 逐项测试
+    COMPLETE = "complete"    # 完成
 
 
 @dataclass
