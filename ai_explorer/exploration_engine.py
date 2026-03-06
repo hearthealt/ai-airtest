@@ -284,6 +284,51 @@ class ExplorationEngine:
 
     # ==================== 各状态处理方法 ====================
 
+    def _try_onboarding_popup_guard(
+        self,
+        step_number: int,
+        screenshot_path: str,
+        elements: list,
+        ui_tree_text: str,
+        resume_state: EngineState,
+    ) -> bool:
+        """截图复核：判断是否误入onboarding引导页，命中则切换到HANDLE_POPUP。"""
+        guard = self.ai_client.detect_onboarding_popup(
+            screenshot_path=screenshot_path,
+            ui_tree_text=ui_tree_text,
+            stage=resume_state.value,
+        )
+        if not guard or not guard.get("has_popup"):
+            return False
+
+        btn = guard.get("popup_close_button")
+        if not isinstance(btn, dict):
+            return False
+
+        popup_type = str(guard.get("popup_type", "")).strip().lower()
+        popup_text = str(btn.get("text", "")).strip() if isinstance(btn, dict) else ""
+        if popup_type != "onboarding" and popup_text != "swipe_left":
+            return False
+
+        raw = btn.get("coordinates", (0.5, 0.5))
+        if isinstance(raw, (list, tuple)) and len(raw) >= 2:
+            raw_coords = self._normalize_coords((raw[0], raw[1]))
+        else:
+            raw_coords = (0.5, 0.5)
+
+        self.previous_state = resume_state
+        self.state = EngineState.HANDLE_POPUP
+        self._pending_popup_coords = self._refine_popup_coords(raw_coords, elements)
+        self._pending_popup_text = popup_text or "swipe_left"
+        self._pending_popup_type = "onboarding"
+
+        reasoning = str(guard.get("reasoning", "")).strip()
+        logger.info(
+            f"[步骤{step_number}] onboarding复核命中: text='{self._pending_popup_text}'"
+            f" reason='{reasoning}'"
+        )
+        return True
+
     def _step_discover_l1(self, step_number: int) -> ExplorationStep:
         """发现L1菜单：截图→AI识别底部导航栏→存储菜单结构"""
         screenshot_path, elements, ui_tree_text = self._capture_and_analyze(step_number)
@@ -304,6 +349,9 @@ class ExplorationEngine:
             self._pending_popup_type = result.get("popup_type", "other")
             logger.info(f"[步骤{step_number}] 发现弹窗: text='{self._pending_popup_text}', popup_type='{self._pending_popup_type}'")
             return self._make_info_step(step_number, screenshot_path, elements, "发现弹窗，准备处理")
+        # 复核：优先处理onboarding引导页（基于截图判断）
+        if self._try_onboarding_popup_guard(step_number, screenshot_path, elements, ui_tree_text, EngineState.DISCOVER_L1):
+            return self._make_info_step(step_number, screenshot_path, elements, "发现onboarding引导页，准备处理")
 
         # 解析L1菜单项
         l1_items = []
@@ -383,6 +431,9 @@ class ExplorationEngine:
             self._pending_popup_text = btn.get("text", "关闭")
             self._pending_popup_type = result.get("popup_type", "other")
             return self._make_info_step(step_number, screenshot_path, elements, "发现弹窗，准备处理")
+        # 复核：优先处理onboarding引导页（基于截图判断）
+        if self._try_onboarding_popup_guard(step_number, screenshot_path, elements, ui_tree_text, EngineState.DISCOVER_L2):
+            return self._make_info_step(step_number, screenshot_path, elements, "发现onboarding引导页，准备处理")
 
         # 解析L2标签
         has_l2 = result.get("has_l2_tabs", False)
@@ -941,78 +992,10 @@ class ExplorationEngine:
             )
 
     def _step_handle_popup(self, step_number: int) -> ExplorationStep:
-        """处理弹窗：登录弹窗可转HANDLE_LOGIN，其他弹窗点关闭→缓存→返回之前状态"""
-        if not self._pending_popup_coords:
-            self.non_closable_overlay_retry_count = 0
-            self.state = self.previous_state or EngineState.DISCOVER_L1
-            return self._make_info_step(step_number, "", [], "无弹窗坐标")
-
-        # 登录弹窗判断：popup_type=="login" 或按钮文字含"登录"（AI有时未正确设置popup_type）
-        _is_login_popup = (
-            self._pending_popup_type == "login"
-            or (self._pending_popup_text and "登录" in self._pending_popup_text
-                and self._pending_popup_text not in ("关闭", "×", "X", "x", "<", "←", "返回"))
-        )
-
-        # 登录弹窗：如果配置了需要登录，则转入登录流程
-        if _is_login_popup and self.config.login_required:
-            logger.info(f"[步骤{step_number}] 检测到登录弹窗(type={self._pending_popup_type}, text='{self._pending_popup_text}')，进入自动登录流程")
-            self._login_actions_done = []
-            self._login_retries = 0
-            self.non_closable_overlay_retry_count = 0
-            self.state = EngineState.HANDLE_LOGIN
-            # 清除弹窗信息（登录流程会自行处理）
-            self._pending_popup_coords = None
-            self._pending_popup_text = ""
-            self._pending_popup_type = ""
-            return self._make_info_step(step_number, "", [], "登录弹窗，转入自动登录")
-
-        # 登录页面不需要登录：直接用坐标点击返回/关闭按钮，跳过弹窗存在性检查
-        # （登录页是全屏页面，不会自动消失，Poco也很难匹配到返回按钮）
-        if _is_login_popup and not self.config.login_required:
-            logger.info(f"[步骤{step_number}] 登录页面(不需要登录)，直接点击返回/关闭: '{self._pending_popup_text}'")
-            action = AIDecision(
-                action=ActionType.CLICK,
-                coordinates=self._pending_popup_coords,
-                is_popup=True,
-                priority=Priority.HIGH,
-                reasoning=f"关闭登录页: {self._pending_popup_text}",
-            )
-            self.action_executor.execute(action)
-            self._pending_popup_coords = None
-            self._pending_popup_text = ""
-            self._pending_popup_type = ""
-            self.non_closable_overlay_retry_count = 0
-            self.state = self.previous_state or EngineState.DISCOVER_L1
-            self.previous_state = None
-            time.sleep(self.config.exploration.action_delay)
-            return self._make_info_step(step_number, "", [], "登录页面已关闭，不需要登录")
-
-        # 不可关闭的状态遮罩（如：业务处理中/加载中）不走“关闭弹窗”流程，直接等待并回到原状态
-        if self._is_non_closable_overlay(self._pending_popup_text, self._pending_popup_type):
-            self.non_closable_overlay_retry_count += 1
-            logger.info(
-                f"[步骤{step_number}] 检测到不可关闭状态层: '{self._pending_popup_text}'"
-                f" ({self.non_closable_overlay_retry_count}/{self.max_non_closable_overlay_retries})"
-            )
-
-            # mode=0阻断测试：长期卡在不可关闭状态层，按阻断成功处理并推进流程
-            if (self.config.mode == 0
-                    and self.non_closable_overlay_retry_count >= self.max_non_closable_overlay_retries):
-                return self._handle_stuck_non_closable_overlay_mode0(step_number)
-
-            self._pending_popup_coords = None
-            self._pending_popup_text = ""
-            self._pending_popup_type = ""
-            self.popup_retry_count = 0
-            self.state = self.previous_state or EngineState.DISCOVER_L1
-            self.previous_state = None
-            time.sleep(self.config.exploration.action_delay)
-            return self._make_info_step(step_number, "", [], "不可关闭状态层，等待后继续")
-
-        # onboarding轮播引导页：AI返回swipe_left，直接左滑，跳过弹窗存在性检查
-        if self._pending_popup_text == "swipe_left":
-            logger.info(f"[步骤{step_number}] onboarding轮播引导页，执行左滑翻页")
+        """处理弹窗：统一使用AI复核当前截图，返回坐标后直接执行。"""
+        # 关键兜底：discover阶段已明确给出swipe_left时，优先直接执行滑动
+        if self._pending_popup_type == "onboarding" and self._pending_popup_text == "swipe_left":
+            logger.info(f"[步骤{step_number}] onboarding轮播引导页，直接执行左滑翻页")
             action = AIDecision(
                 action=ActionType.SWIPE,
                 swipe_direction="left",
@@ -1026,6 +1009,7 @@ class ExplorationEngine:
             self._pending_popup_text = ""
             self._pending_popup_type = ""
             self.non_closable_overlay_retry_count = 0
+            self.popup_retry_count = 0
             self.state = self.previous_state or EngineState.DISCOVER_L1
             self.previous_state = None
 
@@ -1041,117 +1025,182 @@ class ExplorationEngine:
                 ui_tree_summary="", action_taken=action,
                 action_result=action_result, screen_fingerprint="",
             )
+        screenshot_path, elements, ui_tree_text = self._capture_and_analyze(step_number)
+        if not screenshot_path:
+            return self._make_error_step(step_number, "", "截图捕获失败")
 
-        # 点击前重新检查弹窗是否还存在（弹窗可能已自动消失）
-        popup_text = self._pending_popup_text
-        popup_still_exists = False
+        # 统一AI复核：当前是否仍有弹窗，以及该如何处理
+        popup_result = self.ai_client.detect_popup_action(
+            screenshot_path=screenshot_path,
+            ui_tree_text=ui_tree_text,
+            stage="handle_popup",
+        )
+        btn = popup_result.get("popup_close_button") if popup_result else None
 
-        poco = getattr(self.dd, 'poco', None)
-
-        # 方式1：用Poco直接查找弹窗按钮文本
-        if poco and popup_text:
-            try:
-                elem = poco(text=popup_text)
-                if elem.exists():
-                    popup_still_exists = True
-                    logger.info(f"  -> 弹窗检查: Poco文本匹配到'{popup_text}'，弹窗仍在")
-                else:
-                    # 去空格模糊匹配（处理"准 备 好 啦！"这类字间有空格的文本）
-                    normalized = popup_text.replace(" ", "").replace("\u3000", "")
-                    if normalized and len(normalized) >= 2:
-                        pattern = r"\s*".join(re.escape(c) for c in normalized)
-                        elem2 = poco(textMatches=pattern)
-                        if elem2.exists():
-                            popup_still_exists = True
-                            logger.info(f"  -> 弹窗检查: Poco文本模糊匹配到'{popup_text}'，弹窗仍在")
-                        else:
-                            logger.info(f"  -> 弹窗检查: Poco文本未匹配到'{popup_text}'")
-                    else:
-                        logger.info(f"  -> 弹窗检查: Poco文本未匹配到'{popup_text}'")
-            except Exception as e:
-                logger.info(f"  -> 弹窗检查: Poco文本查找异常: {e}")
-
-        # 方式2：文本像是图标描述（×、X、关闭、<、←、返回等），用Poco通过name关键词查找按钮
-        if not popup_still_exists and poco and popup_text in ('×', 'X', 'x', '关闭', '<', '←', '返回'):
-            _close_keywords = ('close', 'dismiss', 'cancel', 'shut', 'exit', 'back', 'return', 'navigate_up', 'nav_back')
-            try:
-                for kw in _close_keywords:
-                    elem = poco(nameMatches=f'.*{kw}.*')
-                    if elem.exists():
-                        popup_still_exists = True
-                        logger.info(f"  -> 弹窗检查: Poco name关键词'{kw}'匹配到关闭按钮，弹窗仍在")
-                        break
-                if not popup_still_exists:
-                    logger.info(f"  -> 弹窗检查: Poco name关键词均未匹配到关闭按钮")
-            except Exception as e:
-                logger.info(f"  -> 弹窗检查: Poco name查找异常: {e}")
-
-        # 方式3：用UI树文本匹配兜底
-        if not popup_still_exists and popup_text:
-            current_elements = self.ui_analyzer.extract_ui_tree()
-            normalized_popup = popup_text.replace(" ", "").replace("\u3000", "")
-            if current_elements:
-                # 第一轮：全等匹配（最精确）
-                for el in current_elements:
-                    el_text = el.text or ""
-                    el_name = el.name or ""
-                    el_desc = el.desc or ""
-                    if popup_text == el_text or popup_text == el_name or popup_text == el_desc:
-                        popup_still_exists = True
-                        logger.info(f"  -> 弹窗检查: UI树全等匹配到'{popup_text}' (text='{el_text}', name='{el_name}', desc='{el_desc}')")
-                        break
-                # 第二轮：子串匹配（排除反义：如搜"同意"不应匹配"不同意"）
-                if not popup_still_exists:
-                    _neg_prefixes = ("不", "没", "未", "非", "别", "勿")
-                    for el in current_elements:
-                        el_text = el.text or ""
-                        el_name = el.name or ""
-                        el_desc = el.desc or ""
-                        for field in (el_text, el_name, el_desc):
-                            if popup_text in field:
-                                # 检查popup_text前面是否紧跟否定词
-                                idx = field.find(popup_text)
-                                if idx > 0 and field[idx - 1] in _neg_prefixes:
-                                    continue  # "不同意"包含"同意"但是反义，跳过
-                                popup_still_exists = True
-                                logger.info(f"  -> 弹窗检查: UI树匹配到'{popup_text}' (text='{el_text}', name='{el_name}', desc='{el_desc}')")
-                                break
-                        if popup_still_exists:
-                            break
-                # 第三轮：去空格模糊匹配
-                if not popup_still_exists and normalized_popup and len(normalized_popup) >= 2:
-                    for el in current_elements:
-                        el_text = (el.text or "").replace(" ", "").replace("\u3000", "")
-                        el_name = (el.name or "").replace(" ", "").replace("\u3000", "")
-                        el_desc = (el.desc or "").replace(" ", "").replace("\u3000", "")
-                        if normalized_popup in el_text or normalized_popup in el_name or normalized_popup in el_desc:
-                            popup_still_exists = True
-                            logger.info(f"  -> 弹窗检查: UI树模糊匹配到'{popup_text}' (text='{el.text}', name='{el.name}', desc='{el.desc}')")
-                            break
-                if not popup_still_exists:
-                    logger.info(f"  -> 弹窗检查: UI树{len(current_elements)}个元素均未匹配到'{popup_text}'")
-            else:
-                popup_still_exists = True
-                logger.info(f"  -> 弹窗检查: UI树提取失败，保守认为弹窗仍在")
-
-        # 没有文本信息，无法判断，保守地认为弹窗还在
-        if not popup_text:
-            popup_still_exists = True
-            logger.info(f"  -> 弹窗检查: 无文本信息，保守认为弹窗仍在")
-
-        if not popup_still_exists:
-            logger.info(f"[步骤{step_number}] 弹窗已自动消失，跳过点击: '{popup_text}'")
+        if not popup_result or not popup_result.get("has_popup"):
+            logger.info(f"[步骤{step_number}] AI判定弹窗已消失，返回主流程")
             self._pending_popup_coords = None
             self._pending_popup_text = ""
             self._pending_popup_type = ""
             self.non_closable_overlay_retry_count = 0
+            self.popup_retry_count = 0
             self.state = self.previous_state or EngineState.DISCOVER_L1
             self.previous_state = None
-            return self._make_info_step(step_number, "", current_elements,
-                                        f"弹窗'{popup_text}'已自动消失，跳过关闭")
+            return self._make_info_step(step_number, screenshot_path, elements, "弹窗已消失(AI判定)")
+
+        # 用AI最新结果刷新弹窗动作信息（坐标允许为空）
+        raw_btn_coords = btn.get("coordinates") if isinstance(btn, dict) else None
+        raw_coords = None
+        if isinstance(raw_btn_coords, (list, tuple)) and len(raw_btn_coords) >= 2:
+            raw_coords = self._normalize_coords((raw_btn_coords[0], raw_btn_coords[1]))
+        elif self._pending_popup_coords:
+            raw_coords = self._pending_popup_coords
+        self._pending_popup_coords = self._refine_popup_coords(raw_coords, elements) if raw_coords else None
+        popup_type = str(popup_result.get("popup_type", "")).strip().lower()
+        popup_text = str(btn.get("text", "")).strip() if isinstance(btn, dict) else ""
+        if popup_text:
+            self._pending_popup_text = popup_text
+        elif popup_type == "busy":
+            self._pending_popup_text = "busy"
+        elif popup_type == "login":
+            self._pending_popup_text = "login"
+        elif not self._pending_popup_text:
+            self._pending_popup_text = "关闭"
+        if popup_type:
+            self._pending_popup_type = popup_type
+        elif not self._pending_popup_type:
+            self._pending_popup_type = "other"
+
+        logger.info(
+            f"[步骤{step_number}] AI弹窗复核: type='{self._pending_popup_type}', "
+            f"text='{self._pending_popup_text}', coords={self._pending_popup_coords}"
+        )
+
+        # 登录弹窗判断：popup_type==login 或按钮文字含"登录"（AI偶发误分类时兜底）
+        _is_login_popup = (
+            self._pending_popup_type == "login"
+            or (self._pending_popup_text and "登录" in self._pending_popup_text
+                and self._pending_popup_text not in ("关闭", "×", "X", "x", "<", "←", "返回"))
+        )
+
+        # 登录弹窗：如果配置了需要登录，则转入登录流程
+        if _is_login_popup and self.config.login_required:
+            logger.info(
+                f"[步骤{step_number}] 检测到登录弹窗(type={self._pending_popup_type}, text='{self._pending_popup_text}')，进入自动登录流程"
+            )
+            self._login_actions_done = []
+            self._login_retries = 0
+            self.non_closable_overlay_retry_count = 0
+            self.state = EngineState.HANDLE_LOGIN
+            self._pending_popup_coords = None
+            self._pending_popup_text = ""
+            self._pending_popup_type = ""
+            return self._make_info_step(step_number, screenshot_path, elements, "登录弹窗，转入自动登录")
+
+        # 登录页面不需要登录：优先按AI给的关闭/返回坐标；若无可靠坐标则直接系统BACK
+        if _is_login_popup and not self.config.login_required:
+            close_keywords = ("关闭", "返回", "<", "←", "back", "cancel", "dismiss", "跳过", "以后再说")
+            text_lower = (self._pending_popup_text or "").lower()
+            has_close_text = any(k in self._pending_popup_text for k in close_keywords) or any(
+                k in text_lower for k in close_keywords
+            )
+            has_click_coords = bool(self._pending_popup_coords)
+
+            if has_click_coords and has_close_text:
+                logger.info(f"[步骤{step_number}] 登录页面(不需要登录)，按AI关闭坐标点击: '{self._pending_popup_text}'")
+                action = AIDecision(
+                    action=ActionType.CLICK,
+                    coordinates=self._pending_popup_coords,
+                    is_popup=True,
+                    priority=Priority.HIGH,
+                    reasoning=f"关闭登录页: {self._pending_popup_text}",
+                )
+            else:
+                logger.info(
+                    f"[步骤{step_number}] 登录页面(不需要登录)，AI未给出可靠关闭坐标"
+                    f"(text='{self._pending_popup_text}', coords={self._pending_popup_coords})，执行系统BACK"
+                )
+                action = AIDecision(
+                    action=ActionType.BACK,
+                    is_popup=True,
+                    priority=Priority.HIGH,
+                    reasoning="登录页无可靠关闭坐标，系统BACK兜底",
+                )
+            action_result = self.action_executor.execute(action)
+            self._pending_popup_coords = None
+            self._pending_popup_text = ""
+            self._pending_popup_type = ""
+            self.non_closable_overlay_retry_count = 0
+            self.popup_retry_count = 0
+            self.state = self.previous_state or EngineState.DISCOVER_L1
+            self.previous_state = None
+            time.sleep(self.config.exploration.action_delay)
+            return ExplorationStep(
+                step_number=step_number, timestamp=time.time(),
+                screenshot_path=screenshot_path,
+                screen_description="登录页面已关闭，不需要登录",
+                ui_tree_summary="",
+                action_taken=action,
+                action_result=action_result,
+                screen_fingerprint="",
+            )
+        # 不可关闭状态层（如：业务处理中/加载中）不走关闭流程，直接等待并回到原状态
+        if self._is_non_closable_overlay(self._pending_popup_text, self._pending_popup_type):
+            self.non_closable_overlay_retry_count += 1
+            logger.info(
+                f"[步骤{step_number}] 检测到不可关闭状态层: '{self._pending_popup_text}'"
+                f" ({self.non_closable_overlay_retry_count}/{self.max_non_closable_overlay_retries})"
+            )
+
+            if (self.config.mode == 0
+                    and self.non_closable_overlay_retry_count >= self.max_non_closable_overlay_retries):
+                return self._handle_stuck_non_closable_overlay_mode0(step_number)
+
+            self._pending_popup_coords = None
+            self._pending_popup_text = ""
+            self._pending_popup_type = ""
+            self.popup_retry_count = 0
+            self.state = self.previous_state or EngineState.DISCOVER_L1
+            self.previous_state = None
+            time.sleep(self.config.exploration.action_delay)
+            return self._make_info_step(step_number, screenshot_path, elements, "不可关闭状态层，等待后继续")
+
+        # onboarding轮播引导页：AI返回swipe_left，直接左滑翻页
+        if self._pending_popup_text == "swipe_left":
+            logger.info(f"[步骤{step_number}] onboarding轮播引导页，执行左滑翻页")
+            action = AIDecision(
+                action=ActionType.SWIPE,
+                swipe_direction="left",
+                is_popup=True,
+                priority=Priority.HIGH,
+                reasoning="onboarding轮播引导页，左滑翻页",
+            )
+            action_result = self.action_executor.execute(action)
+
+            self._pending_popup_coords = None
+            self._pending_popup_text = ""
+            self._pending_popup_type = ""
+            self.non_closable_overlay_retry_count = 0
+            self.popup_retry_count = 0
+            self.state = self.previous_state or EngineState.DISCOVER_L1
+            self.previous_state = None
+
+            self._onboarding_step_count += 1
+            if self._onboarding_step_count >= self._max_onboarding_steps:
+                logger.warning(f"[步骤{step_number}] onboarding引导页操作已达{self._max_onboarding_steps}次上限，强制跳过")
+                self._onboarding_step_count = 0
+
+            time.sleep(self.config.exploration.action_delay)
+            return ExplorationStep(
+                step_number=step_number, timestamp=time.time(),
+                screenshot_path=screenshot_path, screen_description="引导页左滑翻页",
+                ui_tree_summary="", action_taken=action,
+                action_result=action_result, screen_fingerprint="",
+            )
+
+        popup_text = self._pending_popup_text
 
         # agreement弹窗：先勾选"已阅读"复选框（可能有多个），再点"同意"
-        # AI可能未正确返回agreement类型，通过弹窗文字兜底判断
         popup_text_lower = popup_text.lower()
         is_agreement = self._pending_popup_type == "agreement" or any(
             kw in popup_text_lower for kw in ["同意", "协议", "隐私", "agreement", "privacy", "policy"]
@@ -1159,25 +1208,25 @@ class ExplorationEngine:
         if is_agreement:
             self._click_agreement_checkboxes(step_number)
 
-        logger.info(f"[步骤{step_number}] 关闭弹窗: '{popup_text}'")
-
-        # 构建target_element，让ActionExecutor优先用Poco文本匹配点击（比坐标更准）
-        target_element = None
-        if popup_text:
-            target_element = UIElement(
-                name="", text=popup_text, desc="", type="button",
-                control_type=ControlType.BUTTON, bounds={}, center=self._pending_popup_coords or (),
-                clickable=True, enabled=True, visible=True,
+        if not self._pending_popup_coords:
+            logger.info(
+                f"[步骤{step_number}] AI未返回可点击坐标(type={self._pending_popup_type}, text='{popup_text}')，执行系统BACK兜底"
             )
-
-        action = AIDecision(
-            action=ActionType.CLICK,
-            target_element=target_element,
-            coordinates=self._pending_popup_coords,
-            is_popup=True,
-            priority=Priority.HIGH,
-            reasoning=f"关闭弹窗: {popup_text}",
-        )
+            action = AIDecision(
+                action=ActionType.BACK,
+                is_popup=True,
+                priority=Priority.HIGH,
+                reasoning=f"弹窗无可点击坐标，系统BACK兜底: {popup_text or self._pending_popup_type}",
+            )
+        else:
+            logger.info(f"[步骤{step_number}] 按AI坐标关闭弹窗: '{popup_text}'")
+            action = AIDecision(
+                action=ActionType.CLICK,
+                coordinates=self._pending_popup_coords,
+                is_popup=True,
+                priority=Priority.HIGH,
+                reasoning=f"关闭弹窗: {popup_text}",
+            )
         action_result = self.action_executor.execute(action)
 
         if action_result == "success":
@@ -1198,10 +1247,8 @@ class ExplorationEngine:
                 self.state = self.previous_state or EngineState.DISCOVER_L1
                 self.previous_state = None
                 time.sleep(self.config.exploration.action_delay)
-                return self._make_info_step(step_number, "", [], "弹窗连续关闭失败，按不可关闭状态层跳过")
+                return self._make_info_step(step_number, screenshot_path, elements, "弹窗连续关闭失败，按不可关闭状态层跳过")
 
-        # onboarding弹窗需要多步操作（选性别→选年龄→下一步→...），
-        # 点击后不清除弹窗状态，回到之前状态让AI重新识别，直到引导结束
         popup_type = self._pending_popup_type
         self._pending_popup_coords = None
         self._pending_popup_text = ""
@@ -1210,7 +1257,6 @@ class ExplorationEngine:
         self.state = self.previous_state or EngineState.DISCOVER_L1
         self.previous_state = None
 
-        # onboarding计数，超限则强制跳过
         if popup_type == "onboarding":
             self._onboarding_step_count += 1
             if self._onboarding_step_count >= self._max_onboarding_steps:
@@ -1221,7 +1267,7 @@ class ExplorationEngine:
 
         time.sleep(self.config.exploration.action_delay)
 
-        desc = f"关闭弹窗"
+        desc = "关闭弹窗"
         if popup_type == "onboarding":
             desc = f"引导页操作: {popup_text}（将重新识别引导状态）"
             logger.info(f"[步骤{step_number}] onboarding引导页，点击'{popup_text}'后将重新检测")
@@ -1229,7 +1275,7 @@ class ExplorationEngine:
         return ExplorationStep(
             step_number=step_number,
             timestamp=time.time(),
-            screenshot_path="",
+            screenshot_path=screenshot_path,
             screen_description=desc,
             ui_tree_summary="",
             action_taken=action,
@@ -2435,3 +2481,8 @@ class ExplorationEngine:
 
         self._save_menu_structure_to_playbook()
         self.playbook.save()
+
+
+
+
+

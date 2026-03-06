@@ -20,7 +20,7 @@ from .prompts import (
     get_system_prompt, get_user_prompt,
     get_discover_l1_system_prompt, get_discover_l2_system_prompt,
     get_block_check_system_prompt, get_function_check_system_prompt,
-    get_login_system_prompt, get_agreement_checkbox_prompt,
+    get_login_system_prompt, get_agreement_checkbox_prompt, get_onboarding_guard_system_prompt, get_popup_guard_system_prompt,
 )
 
 logger = logging.getLogger(__name__)
@@ -147,6 +147,29 @@ class AIClient:
         """调用AI识别当前L1页面的顶部Tab栏L2标签，返回原始JSON dict"""
         system_prompt = get_discover_l2_system_prompt()
         user_prompt = f"当前在一级页面'{l1_name}'。分析截图，识别顶部标签栏的所有二级Tab。\n\n## UI层级结构\n{ui_tree_text}"
+        return self._call_ai_raw(screenshot_path, system_prompt, user_prompt)
+
+    def detect_popup_action(self, screenshot_path: str, ui_tree_text: str, stage: str = "") -> dict:
+        """通用弹窗复核：基于截图判断当前是否仍有需处理弹窗，并返回动作坐标"""
+        system_prompt = get_popup_guard_system_prompt()
+        user_prompt = (
+            f"当前处于{stage or 'popup_handle'}阶段。请只判断当前截图中的弹窗状态。\n"
+            f"如果有弹窗，返回可执行关闭/处理动作的坐标与文本。\n"
+            f"若是登录页且没有关闭/返回按钮，仍要返回 has_popup=true, popup_type=login, popup_close_button=null。\n"
+            f"如果没有弹窗，返回 has_popup=false。\n\n"
+            f"## UI层级结构\n{ui_tree_text}"
+        )
+        return self._call_ai_raw(screenshot_path, system_prompt, user_prompt)
+
+    def detect_onboarding_popup(self, screenshot_path: str, ui_tree_text: str, stage: str) -> dict:
+        """截图复核：判断当前是否是onboarding引导页，并返回处理动作"""
+        system_prompt = get_onboarding_guard_system_prompt()
+        user_prompt = (
+            f"当前处于{stage}阶段。请仅判断是否是新用户引导页(onboarding)。\n"
+            f"若是，请返回 has_popup=true 和可执行操作。\n"
+            f"无按钮轮播页请返回 text='swipe_left'，coordinates=[0.5, 0.5]。\n\n"
+            f"## UI层级结构\n{ui_tree_text}"
+        )
         return self._call_ai_raw(screenshot_path, system_prompt, user_prompt)
 
     def check_block_status(self, screenshot_path: str, ui_tree_text: str, target_name: str, mode: int = 0) -> dict:
@@ -403,3 +426,4 @@ class AIClient:
             "api_calls": self._call_count,
             "total_tokens": self._total_tokens,
         }
+

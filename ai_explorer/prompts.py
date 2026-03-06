@@ -23,7 +23,7 @@ POPUP_DETECTION_PROMPT = """## 弹窗识别与处理
 2. **系统权限弹窗**：系统级弹窗遮挡全屏 → 点"允许"/"始终允许"（不要点拒绝！）
 3. **大面积广告/引导/升级弹窗**：有遮罩蒙层，挡住了导航控件 → 点关闭(X)/跳过/以后再说
 4. **登录弹窗/浮层**：覆盖在主页面上的登录页，挡住了底部导航 → 点关闭按钮
-5. **全屏登录页面**：整个页面就是登录相关页面，没有底部导航栏。包括但不限于：有手机号/密码输入框的登录表单页、只有"登录"/"注册"按钮的登录入口页、第三方登录选择页等 → popup_type="login"，popup_close_button返回页面上的关闭/返回按钮坐标（如有），没有关闭按钮则返回"登录"按钮的坐标
+5. **全屏登录页面**：整个页面就是登录相关页面，没有底部导航栏。包括但不限于：有手机号/密码输入框的登录表单页、只有"登录"/"注册"按钮的登录入口页、第三方登录选择页等 → popup_type="login"，popup_close_button优先返回页面上的关闭/返回按钮坐标（如有）；若确实没有关闭/返回按钮则返回 null
 6. **青少年模式弹窗**：遮罩弹窗 → 点"我知道了"/"关闭"
 7. **操作引导/提示浮层**：遮挡了导航控件导致无法操作 → 点击消除
 8. **新用户引导/欢迎页/功能介绍页（onboarding）**：首次启动的欢迎页面、功能介绍/教学页、应用特色展示页、性别/年龄/兴趣选择、个性化推荐设置等。
@@ -58,7 +58,7 @@ POPUP_DETECTION_PROMPT = """## 弹窗识别与处理
 - 隐私协议 → 返回"同意"按钮（不是拒绝）
 - 系统权限 → 返回"允许"/"始终允许"按钮（不要返回"拒绝"！）
 - 广告/引导 → 返回关闭(X)/跳过按钮
-- 登录弹窗/登录页面 → 优先返回页面上的关闭/返回按钮（<、←、×、X等）的坐标；如果没有关闭/返回按钮（如只有"登录"/"注册"按钮的入口页），则返回"登录"按钮的坐标。text填写按钮的文字（如"<"、"返回"、"×"、"登录"）
+- 登录弹窗/登录页面 → 优先返回页面上的关闭/返回按钮（<、←、×、X等）的坐标；如果没有关闭/返回按钮（如只有"登录"/"注册"按钮的入口页），则 popup_close_button 返回 null。不要返回"登录"按钮坐标作为关闭动作
 - 青少年模式 → 返回"我知道了"按钮
 - 操作引导浮层 → 返回提示文字所在坐标（点击即可消除）
 - 新用户引导/欢迎页/功能介绍页（onboarding）→ 处理规则：
@@ -249,6 +249,7 @@ def get_discover_l1_system_prompt() -> str:
 - 按从左到右的顺序排列
 - coordinates使用归一化值0.0-1.0，是该菜单项的中心点坐标
 - is_selected=true表示当前选中/高亮的菜单项
+- 如果画面是新手引导/轮播引导页（onboarding），即使能看到底部导航，也必须优先返回 has_popup=true，不要输出l1_items
 - 如果有弹窗遮挡，设has_popup=true并提供关闭按钮坐标
 - 如果没有弹窗，popup_close_button设为null"""
 
@@ -289,10 +290,72 @@ def get_discover_l2_system_prompt() -> str:
 - is_selected=true表示当前选中/高亮的标签
 - 如果当前页面没有顶部标签栏，设has_l2_tabs=false，l2_items为空数组
 - 不要把搜索栏、页面中的分类标签、推荐栏等当作顶部Tab
+- 如果画面是新手引导/轮播引导页（onboarding），即使能看到L1/L2结构，也必须优先返回 has_popup=true，不要输出l2_items
 - 如果有弹窗遮挡，设has_popup=true并提供关闭按钮坐标
 - 如果没有弹窗，popup_close_button设为null"""
 
 
+
+def get_onboarding_guard_system_prompt() -> str:
+    """onboarding复核：只判断是否是引导页，命中则返回处理动作"""
+    return """你是一个移动应用UI分析员。你的唯一任务：判断当前截图是不是新用户引导页(onboarding)。
+
+## 核心要求
+- 必须以截图视觉内容为主判断，UI树只能辅助，不可反向覆盖截图结论
+- 发现 onboarding 时，必须优先返回 has_popup=true
+- 即使看到了底部导航栏，也不能忽略 onboarding
+
+## ★★★ 绝对不是onboarding的页面（必须排除）
+- **登录页面**：包含手机号/密码/验证码输入框、”登录”/”注册”按钮、第三方登录入口等 → 这是登录页，不是onboarding！即使标题含”欢迎”二字也不算onboarding
+- **注册页面**：有填写个人信息的表单（手机号、密码、邮箱等）→ 不是onboarding
+- **任何有输入框（手机号/密码/验证码）的页面** → 不是onboarding
+
+## onboarding常见特征（必须同时满足”符合特征”且”不在排除列表”才可判定）
+- 页面底部有轮播圆点指示器（●○○ / 小圆点序列）
+- 页面是功能介绍页/新手引导图/新特性展示，内容偏静态说明或图片展示，**没有输入框**
+- 页面出现”跳过/知道了/下一步/开始体验”等引导按钮
+- **注意**：标题含”欢迎”但页面主体是登录表单 → 不是onboarding，是登录页
+
+## 返回格式（只返回JSON）
+{
+  "has_popup": true,
+  "popup_type": "onboarding",
+  "popup_close_button": {"coordinates": [0.5, 0.5], "text": "swipe_left"},
+  "reasoning": "判断依据"
+}
+
+## 规则
+- 若是 onboarding：
+  - 有“跳过/关闭/知道了”按钮：返回该按钮坐标和文字
+  - 无可点击文字按钮，只有轮播页：text 固定为 "swipe_left"，coordinates 设为 [0.5, 0.5]
+- 若不是 onboarding：返回 has_popup=false，popup_close_button=null
+"""
+
+
+def get_popup_guard_system_prompt() -> str:
+    """通用弹窗复核：只判断当前是否有需处理弹窗，并返回关闭动作"""
+    return """你是一个移动应用UI分析员。你的唯一任务：判断当前截图中是否存在“需要处理的弹窗/引导层”。
+
+""" + POPUP_DETECTION_PROMPT + """
+
+## 输出要求
+- 只返回JSON，不要markdown
+- 若存在需处理弹窗：has_popup=true，返回 popup_type 与 popup_close_button（coordinates+text）
+- 若不存在需处理弹窗：has_popup=false，popup_close_button=null
+- 若 popup_type="login"：
+  - 全屏登录页、登录浮层都属于 has_popup=true
+  - 优先返回关闭/返回按钮坐标（如"×"/"<"/"返回"）
+  - 若没有关闭/返回按钮，popup_close_button 必须为 null（不要返回"登录"按钮坐标）
+- 若 popup_type="busy" 或其他不可关闭状态层：popup_close_button 允许为 null
+
+## 返回格式
+{
+  "has_popup": true,
+  "popup_type": "onboarding|login|permission|agreement|ad|guide|busy|other",
+  "popup_close_button": {"coordinates": [0.5, 0.5], "text": "关闭"} or null,
+  "reasoning": "判断依据"
+}
+"""
 def get_block_check_system_prompt() -> str:
     """阻断检查：复用现有的页面检查标准"""
     return """你是一个移动应用QA测试员，正在执行阻断测试。
@@ -499,3 +562,5 @@ def get_agreement_checkbox_prompt() -> str:
 
 - coordinates使用归一化值0.0-1.0，表示复选框图标的中心位置
 - 如果没有需要勾选的复选框，返回 {"checkboxes": []}"""
+
+
