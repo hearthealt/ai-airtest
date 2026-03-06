@@ -307,7 +307,7 @@ class ExplorationEngine:
 
         popup_type = str(guard.get("popup_type", "")).strip().lower()
         popup_text = str(btn.get("text", "")).strip() if isinstance(btn, dict) else ""
-        if popup_type != "onboarding" and popup_text != "swipe_left":
+        if popup_type != "onboarding" and popup_text not in ("swipe_left", "swipe_up"):
             return False
 
         raw = btn.get("coordinates", (0.5, 0.5))
@@ -371,6 +371,59 @@ class ExplorationEngine:
         logger.info(f"[步骤{step_number}] 发现 {len(l1_items)} 个L1菜单: {l1_names}")
 
         if not l1_items:
+            # 先用当前截图快速检查：页面是否处于加载中/错误状态（阻断可能已生效）
+            if self.config.mode == 0:
+                quick_check = self.ai_client.check_block_status(
+                    screenshot_path, ui_tree_text, "入口页", mode=0
+                )
+                is_error = quick_check.get("is_error_screen", False)
+                is_loading = quick_check.get("is_loading", False)
+                check_desc = quick_check.get("error_description", "") or quick_check.get("screen_description", "")
+
+                if is_error:
+                    # 页面已明确报错/空白/阻断 → 直接判定阻断成功
+                    logger.info(f"[步骤{step_number}] ✓ 入口页阻断成功（无L1且页面异常）: {check_desc}")
+                    self.last_clicked_target = "入口页(无L1)"
+                    if self.last_clicked_target not in self.tested_controls:
+                        self.tested_controls.append(self.last_clicked_target)
+                    self._record_block_result(step_number, "block_success", check_desc, screenshot_path)
+                    self.state = EngineState.COMPLETE
+                    return ExplorationStep(
+                        step_number=step_number, timestamp=time.time(),
+                        screenshot_path=screenshot_path,
+                        screen_description=f"[入口页阻断成功] {check_desc}",
+                        ui_tree_summary=f"{len(elements)}个元素",
+                        action_taken=AIDecision(action=ActionType.WAIT, priority=Priority.HIGH, reasoning="入口页阻断成功"),
+                        action_result="block_success", screen_fingerprint="",
+                    )
+
+                if is_loading:
+                    # 页面还在加载中 → 等待后重试，但如果已重试过了就判阻断成功
+                    if self.l1_discover_retry_count < self.max_l1_discover_retries:
+                        self.l1_discover_retry_count += 1
+                        wait_s = self.l1_discover_retry_wait_seconds
+                        logger.warning(f"[步骤{step_number}] 入口页加载中({self.l1_discover_retry_count}/{self.max_l1_discover_retries})，等待{wait_s}秒后重试")
+                        time.sleep(wait_s)
+                        self.state = EngineState.DISCOVER_L1
+                        return self._make_info_step(step_number, screenshot_path, elements, f"入口页加载中，等待{wait_s}秒后重试")
+
+                    logger.info(f"[步骤{step_number}] ✓ 入口页阻断成功（持续加载中）: {check_desc}")
+                    self.l1_discover_retry_count = 0
+                    self.last_clicked_target = "入口页(无L1)"
+                    if self.last_clicked_target not in self.tested_controls:
+                        self.tested_controls.append(self.last_clicked_target)
+                    self._record_block_result(step_number, "block_success", f"持续加载中: {check_desc}", screenshot_path)
+                    self.state = EngineState.COMPLETE
+                    return ExplorationStep(
+                        step_number=step_number, timestamp=time.time(),
+                        screenshot_path=screenshot_path,
+                        screen_description=f"[入口页阻断成功] 持续加载中: {check_desc}",
+                        ui_tree_summary=f"{len(elements)}个元素",
+                        action_taken=AIDecision(action=ActionType.WAIT, priority=Priority.HIGH, reasoning="入口页持续加载=阻断成功"),
+                        action_result="block_success", screen_fingerprint="",
+                    )
+
+            # mode=1 或 mode=0 但页面未报错也没加载中（可能只是暂时没识别到L1）→ 走原有重试逻辑
             if self.l1_discover_retry_count < self.max_l1_discover_retries:
                 self.l1_discover_retry_count += 1
                 wait_s = self.l1_discover_retry_wait_seconds
@@ -993,15 +1046,16 @@ class ExplorationEngine:
 
     def _step_handle_popup(self, step_number: int) -> ExplorationStep:
         """处理弹窗：统一使用AI复核当前截图，返回坐标后直接执行。"""
-        # 关键兜底：discover阶段已明确给出swipe_left时，优先直接执行滑动
-        if self._pending_popup_type == "onboarding" and self._pending_popup_text == "swipe_left":
-            logger.info(f"[步骤{step_number}] onboarding轮播引导页，直接执行左滑翻页")
+        # 关键兜底：discover阶段已明确给出swipe_left/swipe_up时，优先直接执行滑动
+        if self._pending_popup_type == "onboarding" and self._pending_popup_text in ("swipe_left", "swipe_up"):
+            swipe_dir = "left" if self._pending_popup_text == "swipe_left" else "up"
+            logger.info(f"[步骤{step_number}] onboarding轮播引导页，直接执行{'左滑' if swipe_dir == 'left' else '上滑'}翻页")
             action = AIDecision(
                 action=ActionType.SWIPE,
-                swipe_direction="left",
+                swipe_direction=swipe_dir,
                 is_popup=True,
                 priority=Priority.HIGH,
-                reasoning="onboarding轮播引导页，左滑翻页",
+                reasoning="onboarding轮播引导页，滑动翻页",
             )
             action_result = self.action_executor.execute(action)
 
@@ -1021,7 +1075,7 @@ class ExplorationEngine:
             time.sleep(self.config.exploration.action_delay)
             return ExplorationStep(
                 step_number=step_number, timestamp=time.time(),
-                screenshot_path="", screen_description="引导页左滑翻页",
+                screenshot_path="", screen_description="引导页滑动翻页",
                 ui_tree_summary="", action_taken=action,
                 action_result=action_result, screen_fingerprint="",
             )
@@ -1165,15 +1219,16 @@ class ExplorationEngine:
             time.sleep(self.config.exploration.action_delay)
             return self._make_info_step(step_number, screenshot_path, elements, "不可关闭状态层，等待后继续")
 
-        # onboarding轮播引导页：AI返回swipe_left，直接左滑翻页
-        if self._pending_popup_text == "swipe_left":
-            logger.info(f"[步骤{step_number}] onboarding轮播引导页，执行左滑翻页")
+        # onboarding轮播引导页：AI返回swipe_left或swipe_up，直接滑动翻页
+        if self._pending_popup_text in ("swipe_left", "swipe_up"):
+            swipe_dir = "left" if self._pending_popup_text == "swipe_left" else "up"
+            logger.info(f"[步骤{step_number}] onboarding轮播引导页，执行{'左滑' if swipe_dir == 'left' else '上滑'}翻页")
             action = AIDecision(
                 action=ActionType.SWIPE,
-                swipe_direction="left",
+                swipe_direction=swipe_dir,
                 is_popup=True,
                 priority=Priority.HIGH,
-                reasoning="onboarding轮播引导页，左滑翻页",
+                reasoning="onboarding轮播引导页，滑动翻页",
             )
             action_result = self.action_executor.execute(action)
 
@@ -1193,7 +1248,7 @@ class ExplorationEngine:
             time.sleep(self.config.exploration.action_delay)
             return ExplorationStep(
                 step_number=step_number, timestamp=time.time(),
-                screenshot_path=screenshot_path, screen_description="引导页左滑翻页",
+                screenshot_path=screenshot_path, screen_description="引导页滑动翻页",
                 ui_tree_summary="", action_taken=action,
                 action_result=action_result, screen_fingerprint="",
             )
@@ -1592,6 +1647,7 @@ class ExplorationEngine:
         """检查目标L1底部导航是否在当前页面可见，不可见则返回。
 
         场景：上一个L1的最后一个L2跳转了新页面，底部导航栏消失了。
+        先用UI树快速匹配，匹配失败时用AI截图复核，避免UI树文字不准导致误判。
         """
         if self._back_retry_count >= self._max_back_retries:
             self._back_retry_count = 0
@@ -1626,7 +1682,21 @@ class ExplorationEngine:
             self._back_retry_count = 0
             return None
 
-        # 所有L1都找不到 → 页面跳转了，需要返回
+        # UI树匹配全部失败 → 用AI截图复核：当前页面是否还有底部导航栏
+        screenshot_path = self.ui_analyzer.capture_screenshot(f"step{step_number}_l1check")
+        if screenshot_path:
+            ui_tree_text = self.ui_analyzer.format_ui_tree_text(elements) if elements else ""
+            ai_result = self.ai_client.discover_l1_menus(screenshot_path, ui_tree_text)
+            ai_l1_items = ai_result.get("l1_items", [])
+            if ai_l1_items:
+                logger.info(f"[步骤{step_number}] UI树未匹配到L1，但AI识别到{len(ai_l1_items)}个L1菜单，判定未跳转")
+                self._back_retry_count = 0
+                return None
+            logger.info(f"[步骤{step_number}] UI树和AI均未识别到底部导航，判定页面已跳转")
+        else:
+            logger.info(f"[步骤{step_number}] UI树未匹配到L1且截图失败，判定页面已跳转")
+
+        # 确认页面跳转了，需要返回
         logger.info(f"[步骤{step_number}] 页面跳转，返回底部导航")
 
         back_elem = self._find_back_button(elements)
@@ -1714,7 +1784,24 @@ class ExplorationEngine:
             self._back_retry_count = 0
             return None
 
-        # 判定为跳转了新页面
+        # L1可见但L2全部不可见（首次）→ 真的跳转了详情页(底部导航还在但L2消失了)，直接返回
+        if l1_visible and l2_visible_count == 0:
+            logger.info(f"[步骤{step_number}] L1可见但L2全部不可见（0/{len(l2_list)}），判定跳转到详情页，返回")
+            # 直接 fall through 到下面的返回逻辑
+        elif not l1_visible:
+            # L1也不可见 → 用AI截图复核，区分"真跳转"和"UI树文字不准"
+            screenshot_path = self.ui_analyzer.capture_screenshot(f"step{step_number}_l2check")
+            if screenshot_path:
+                ui_tree_text = self.ui_analyzer.format_ui_tree_text(elements) if elements else ""
+                ai_result = self.ai_client.discover_l1_menus(screenshot_path, ui_tree_text)
+                ai_l1_items = ai_result.get("l1_items", [])
+                if ai_l1_items:
+                    logger.info(
+                        f"[步骤{step_number}] UI树未匹配到L1，但AI识别到{len(ai_l1_items)}个L1菜单，判定未跳转"
+                    )
+                    self._back_retry_count = 0
+                    return None
+
         logger.info(f"[步骤{step_number}] 检测到页面跳转（L1可见={l1_visible}, L2可见={l2_visible_count}/{len(l2_list)}），返回L1页面")
         back_elem = self._find_back_button(elements)
         if back_elem:
